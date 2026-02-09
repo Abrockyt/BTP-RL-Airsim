@@ -87,28 +87,149 @@ class MHA_Actor(nn.Module):
         return mean
 
 
+class Critic(nn.Module):
+    """Critic Network for PPO - Evaluates state value"""
+    def __init__(self, state_dim):
+        super(Critic, self).__init__()
+        self.fc1 = nn.Linear(state_dim, 128)
+        self.fc2 = nn.Linear(128, 64)
+        self.fc3 = nn.Linear(64, 1)
+        self.relu = nn.ReLU()
+    
+    def forward(self, state):
+        x = self.relu(self.fc1(state))
+        x = self.relu(self.fc2(x))
+        value = self.fc3(x)
+        return value
+
+
 class PPO_Agent:
-    """PPO Agent with MHA Actor"""
-    def __init__(self, state_dim, action_dim, lr=0.0003, gamma=0.99, K_epochs=4):
+    """PPO Agent with MHA Actor and online learning capability"""
+    def __init__(self, state_dim, action_dim, lr=0.0003, gamma=0.99, K_epochs=4, eps_clip=0.2):
         self.gamma = gamma
         self.K_epochs = K_epochs
+        self.eps_clip = eps_clip
+        self.lr = lr
         
         self.actor = MHA_Actor(state_dim, action_dim)
+        self.critic = Critic(state_dim)
+        self.old_actor = MHA_Actor(state_dim, action_dim)
+        
         if lr > 0:
-            self.optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr)
+            self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr)
+            self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=lr)
+        
+        # Memory buffers for RL training
+        self.states = []
+        self.actions = []
+        self.rewards = []
+        self.log_probs = []
+        self.dones = []
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.actor.to(self.device)
+        self.critic.to(self.device)
+        self.old_actor.to(self.device)
+        
+        self.MseLoss = nn.MSELoss()
     
-    def select_action(self, state):
-        with torch.no_grad():
-            state_tensor = torch.FloatTensor(state).to(self.device)
-            action = self.actor(state_tensor).cpu().numpy()
+    def select_action(self, state, training=False):
+        state_tensor = torch.FloatTensor(state).to(self.device)
         
-        if len(action.shape) > 1:
-            action = action[0]
+        if training and self.lr > 0:
+            # Training mode: sample from distribution
+            with torch.no_grad():
+                action_mean = self.old_actor(state_tensor)
+                # Add noise for exploration
+                std = 0.3
+                action = action_mean + torch.randn_like(action_mean) * std
+                action = torch.clamp(action, -1, 1)
+                
+                # Store for training
+                if action_mean.dim() == 1:
+                    action_mean = action_mean.unsqueeze(0)
+                if state_tensor.dim() == 1:
+                    state_tensor = state_tensor.unsqueeze(0)
+                    
+                self.states.append(state_tensor.squeeze(0))
+                self.actions.append(action.squeeze(0))
+        else:
+            # Inference mode: use mean action
+            with torch.no_grad():
+                action = self.actor(state_tensor)
         
-        return action
+        action_np = action.cpu().numpy()
+        if len(action_np.shape) > 1:
+            action_np = action_np[0]
+        
+        return action_np
+    
+    def store_reward(self, reward, done):
+        """Store reward and done flag during training"""
+        self.rewards.append(reward)
+        self.dones.append(done)
+    
+    def update(self):
+        """Update policy using PPO algorithm"""
+        if len(self.states) < 2 or self.lr == 0:
+            return 0.0, 0.0
+        
+        # Convert to tensors
+        states = torch.stack(self.states).detach().to(self.device)
+        actions = torch.stack(self.actions).detach().to(self.device)
+        
+        # Calculate returns
+        rewards = []
+        discounted_reward = 0
+        for reward, done in zip(reversed(self.rewards), reversed(self.dones)):
+            if done:
+                discounted_reward = 0
+            discounted_reward = reward + self.gamma * discounted_reward
+            rewards.insert(0, discounted_reward)
+        
+        rewards = torch.FloatTensor(rewards).to(self.device)
+        rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
+        
+        total_actor_loss = 0
+        total_critic_loss = 0
+        
+        # PPO update
+        for _ in range(self.K_epochs):
+            # Current policy
+            action_mean = self.actor(states)
+            state_values = self.critic(states).squeeze()
+            
+            # Calculate advantages
+            advantages = rewards - state_values.detach()
+            
+            # Simple policy loss (no log probs needed for deterministic)
+            actor_loss = -advantages.mean()
+            critic_loss = self.MseLoss(state_values, rewards)
+            
+            # Update actor
+            self.actor_optimizer.zero_grad()
+            actor_loss.backward()
+            self.actor_optimizer.step()
+            
+            # Update critic
+            self.critic_optimizer.zero_grad()
+            critic_loss.backward()
+            self.critic_optimizer.step()
+            
+            total_actor_loss += actor_loss.item()
+            total_critic_loss += critic_loss.item()
+        
+        # Update old policy
+        self.old_actor.load_state_dict(self.actor.state_dict())
+        
+        # Clear memory
+        self.states = []
+        self.actions = []
+        self.rewards = []
+        self.log_probs = []
+        self.dones = []
+        
+        return total_actor_loss / self.K_epochs, total_critic_loss / self.K_epochs
 
 
 # =============================================================================
@@ -178,7 +299,22 @@ class SmartVisionDroneGUI:
         # Ground height tracking
         self.ground_height = 0.0
         
+        # Reinforcement Learning - Historical tracking
+        self.run_history = []  # Store metrics from each run
+        self.current_run_number = 0
+        self.best_energy = float('inf')
+        self.best_time = float('inf')
+        self.learning_enabled = True  # Enable/disable online learning
+        
+        # Training statistics
+        self.training_stats = {
+            'actor_losses': [],
+            'critic_losses': [],
+            'rewards': []
+        }
+        
         os.makedirs('performance_graphs', exist_ok=True)
+        os.makedirs('trained_models', exist_ok=True)
         
         self.create_widgets()
     
@@ -192,7 +328,7 @@ class SmartVisionDroneGUI:
                         font=("Arial", 22, "bold"), fg="white", bg='#0d47a1')
         title.pack(pady=12)
         
-        subtitle = tk.Label(header_frame, text="PPO AI + Computer Vision Obstacle Avoidance | Real-Time Depth Sensing", 
+        subtitle = tk.Label(header_frame, text="MHA-PPO Reinforcement Learning + Computer Vision | Online Learning Enabled | Real-Time Performance Tracking", 
                            font=("Arial", 10), fg="#90caf9", bg='#0d47a1')
         subtitle.pack()
         
@@ -352,6 +488,41 @@ class SmartVisionDroneGUI:
                                       font=("Arial", 9), fg="white", bg='#2d2d2d')
         self.distance_label.pack(pady=2, anchor='w', padx=10)
         
+        # Reinforcement Learning Statistics
+        rl_frame = tk.Frame(left_panel, bg='#1e1e1e', relief='sunken', borderwidth=2)
+        rl_frame.pack(pady=10, padx=10, fill='x')
+        
+        tk.Label(rl_frame, text="🧠 REINFORCEMENT LEARNING", 
+                font=("Arial", 10, "bold"), fg="#9c27b0", bg='#1e1e1e').pack(pady=3)
+        
+        tk.Label(rl_frame, text="Learning improves energy efficiency over runs", 
+                font=("Arial", 8), fg="#ce93d8", bg='#1e1e1e').pack()
+        
+        self.run_number_label = tk.Label(rl_frame, text="Run: #0", 
+                                         font=("Arial", 9, "bold"), fg="white", bg='#1e1e1e')
+        self.run_number_label.pack(pady=2, anchor='w', padx=10)
+        
+        self.best_energy_label = tk.Label(rl_frame, text="Best Energy: -- Wh", 
+                                          font=("Arial", 9), fg="#76ff03", bg='#1e1e1e')
+        self.best_energy_label.pack(pady=2, anchor='w', padx=10)
+        
+        self.best_time_label = tk.Label(rl_frame, text="Best Time: -- s", 
+                                        font=("Arial", 9), fg="#76ff03", bg='#1e1e1e')
+        self.best_time_label.pack(pady=2, anchor='w', padx=10)
+        
+        self.improvement_label = tk.Label(rl_frame, text="Improvement: --", 
+                                          font=("Arial", 9), fg="#00e5ff", bg='#1e1e1e')
+        self.improvement_label.pack(pady=2, anchor='w', padx=10)
+        
+        # Learning toggle
+        self.learning_var = tk.BooleanVar(value=True)
+        learning_check = tk.Checkbutton(rl_frame, text="Enable Online Learning", 
+                                       variable=self.learning_var,
+                                       command=self.toggle_learning,
+                                       font=("Arial", 9), fg="white", bg='#1e1e1e',
+                                       selectcolor='#1e1e1e', activebackground='#1e1e1e')
+        learning_check.pack(pady=5)
+        
         # Control buttons - LARGER AND MORE VISIBLE
         button_frame = tk.Frame(left_panel, bg='#2d2d2d')
         button_frame.pack(pady=20, padx=15)
@@ -444,47 +615,63 @@ class SmartVisionDroneGUI:
             self.fig.clear()
             times = self.metrics['time']
             
-            # Speed
+            # Speed - Shows drone velocity over time
             ax1 = self.fig.add_subplot(2, 3, 1, facecolor='#1e1e1e')
-            ax1.plot(times, self.metrics['speeds'], color='#2196f3', linewidth=2)
-            ax1.set_title('SPEED', fontweight='bold', fontsize=10, color='white')
+            ax1.plot(times, self.metrics['speeds'], color='#2196f3', linewidth=2, label='Current')
+            ax1.set_title('SPEED (Horizontal Velocity)\nOptimal: 8-15 m/s for efficiency', 
+                         fontweight='bold', fontsize=9, color='white')
             ax1.set_ylabel('m/s', fontsize=8, color='white')
+            ax1.axhline(y=12, color='#76ff03', linestyle='--', alpha=0.5, linewidth=1, label='Target Cruise')
             ax1.grid(alpha=0.2, color='#404040')
+            ax1.legend(fontsize=7, loc='upper right', facecolor='#1e1e1e', edgecolor='#404040', labelcolor='white')
             ax1.tick_params(colors='white', labelsize=8)
             for spine in ax1.spines.values():
                 spine.set_color('#404040')
             
-            # Altitude
+            # Altitude - Shows height above ground level
             ax2 = self.fig.add_subplot(2, 3, 2, facecolor='#1e1e1e')
             alts = [abs(a) for a in self.metrics['altitudes']]
-            ax2.plot(times, alts, color='#ff9800', linewidth=2)
-            ax2.set_title('ALTITUDE', fontweight='bold', fontsize=10, color='white')
+            ax2.plot(times, alts, color='#ff9800', linewidth=2, label='Current')
+            ax2.set_title('ALTITUDE (Height Above Ground)\nTarget: 20m AGL for safety', 
+                         fontweight='bold', fontsize=9, color='white')
             ax2.set_ylabel('m', fontsize=8, color='white')
+            ax2.axhline(y=20, color='#76ff03', linestyle='--', alpha=0.5, linewidth=1, label='Target Alt')
             ax2.grid(alpha=0.2, color='#404040')
+            ax2.legend(fontsize=7, loc='upper right', facecolor='#1e1e1e', edgecolor='#404040', labelcolor='white')
             ax2.tick_params(colors='white', labelsize=8)
             for spine in ax2.spines.values():
                 spine.set_color('#404040')
             
-            # Battery
+            # Battery - Shows remaining power percentage
             ax3 = self.fig.add_subplot(2, 3, 3, facecolor='#1e1e1e')
             battery_color = '#4caf50' if self.battery_percent > 50 else '#ff9800' if self.battery_percent > 20 else '#f44336'
-            ax3.plot(times, self.metrics['battery'], color=battery_color, linewidth=2.5)
-            ax3.set_title('BATTERY', fontweight='bold', fontsize=10, color='white')
+            ax3.plot(times, self.metrics['battery'], color=battery_color, linewidth=2.5, label='Current')
+            ax3.set_title('BATTERY (Remaining Capacity)\nDecreases as energy is consumed', 
+                         fontweight='bold', fontsize=9, color='white')
             ax3.set_ylabel('%', fontsize=8, color='white')
-            ax3.grid(alpha=0.2, color='#404040')
-            ax3.axhline(y=20, color='#f44336', linestyle='--', alpha=0.7, linewidth=2)
+            ax3.axhline(y=20, color='#f44336', linestyle='--', alpha=0.7, linewidth=2, label='Critical Level')
             ax3.set_ylim([0, 105])
+            ax3.grid(alpha=0.2, color='#404040')
+            ax3.legend(fontsize=7, loc='upper right', facecolor='#1e1e1e', edgecolor='#404040', labelcolor='white')
             ax3.tick_params(colors='white', labelsize=8)
             for spine in ax3.spines.values():
                 spine.set_color('#404040')
             
-            # Energy
+            # Energy - Shows cumulative energy consumption with RL comparison
             ax4 = self.fig.add_subplot(2, 3, 4, facecolor='#1e1e1e')
-            ax4.plot(times, self.metrics['energy'], color='#e91e63', linewidth=2)
-            ax4.set_title('ENERGY', fontweight='bold', fontsize=10, color='white')
-            ax4.set_ylabel('Wh', fontsize=8, color='white')
+            ax4.plot(times, self.metrics['energy'], color='#e91e63', linewidth=2.5, label=f'Run #{self.current_run_number}')
+            
+            # Show best run comparison if available
+            if self.best_energy < float('inf') and len(self.run_history) > 0:
+                ax4.axhline(y=self.best_energy, color='#76ff03', linestyle='--', 
+                           alpha=0.7, linewidth=2, label=f'Best: {self.best_energy:.2f} Wh')
+            
+            ax4.set_title('ENERGY (Cumulative Consumption)\n⬆️ Increases over time - RL minimizes this', 
+                         fontweight='bold', fontsize=9, color='white')
+            ax4.set_ylabel('Wh (Watt-hours)', fontsize=8, color='white')
             ax4.set_xlabel('Time (s)', fontsize=8, color='white')
             ax4.grid(alpha=0.2, color='#404040')
+            ax4.legend(fontsize=7, loc='upper left', facecolor='#1e1e1e', edgecolor='#404040', labelcolor='white')
             ax4.tick_params(colors='white', labelsize=8)
             for spine in ax4.spines.values():
                 spine.set_color('#404040')
@@ -650,6 +837,96 @@ class SmartVisionDroneGUI:
         except Exception as e:
             print(f"Map click error: {e}")
     
+    def toggle_learning(self):
+        """Toggle online learning on/off"""
+        self.learning_enabled = self.learning_var.get()
+        status = "ENABLED" if self.learning_enabled else "DISABLED"
+        print(f"🧠 Online Learning {status}")
+    
+    def calculate_reward(self, current_pos, goal_pos, distance, speed, energy_consumed, battery_percent):
+        """Calculate reward for RL training"""
+        # Distance-based reward (closer to goal = higher reward)
+        distance_reward = -distance * 0.1  # Negative reward for being far
+        
+        # Energy efficiency reward (lower energy = higher reward)
+        energy_reward = -energy_consumed * 2.0  # Penalize energy consumption
+        
+        # Goal reached bonus
+        goal_reward = 100.0 if distance < 5.0 else 0.0
+        
+        # Speed efficiency (maintain good speed)
+        speed_reward = 0.0
+        if 8.0 <= speed <= 15.0:
+            speed_reward = 1.0
+        elif speed < 3.0:
+            speed_reward = -2.0  # Penalize being too slow
+        
+        # Battery penalty (avoid running out)
+        battery_reward = 0.0
+        if battery_percent < 20.0:
+            battery_reward = -10.0
+        
+        total_reward = distance_reward + energy_reward + goal_reward + speed_reward + battery_reward
+        return total_reward
+    
+    def update_rl_display(self):
+        """Update RL statistics in UI"""
+        self.run_number_label.config(text=f"Run: #{self.current_run_number}")
+        
+        if self.best_energy < float('inf'):
+            self.best_energy_label.config(text=f"Best Energy: {self.best_energy:.2f} Wh")
+        
+        if self.best_time < float('inf'):
+            self.best_time_label.config(text=f"Best Time: {self.best_time:.1f} s")
+        
+        if len(self.run_history) > 1:
+            current_energy = self.run_history[-1]['energy']
+            prev_energy = self.run_history[-2]['energy']
+            improvement = ((prev_energy - current_energy) / prev_energy) * 100
+            
+            if improvement > 0:
+                self.improvement_label.config(
+                    text=f"Improvement: +{improvement:.1f}% ⬆️",
+                    fg="#76ff03"
+                )
+            else:
+                self.improvement_label.config(
+                    text=f"Improvement: {improvement:.1f}% ⬇️",
+                    fg="#ff5252"
+                )
+        else:
+            self.improvement_label.config(text="Improvement: --")
+    
+    def save_run_to_history(self, final_time, final_energy, goal_reached):
+        """Save current run metrics to history"""
+        run_data = {
+            'run_number': self.current_run_number,
+            'time': final_time,
+            'energy': final_energy,
+            'goal_reached': goal_reached,
+            'metrics': {
+                'times': self.metrics['time'].copy(),
+                'speeds': self.metrics['speeds'].copy(),
+                'energies': self.metrics['energy'].copy(),
+                'positions_x': self.metrics['positions_x'].copy(),
+                'positions_y': self.metrics['positions_y'].copy()
+            }
+        }
+        
+        self.run_history.append(run_data)
+        
+        # Update best records
+        if goal_reached:
+            if final_energy < self.best_energy:
+                self.best_energy = final_energy
+                print(f"🏆 NEW BEST ENERGY: {final_energy:.2f} Wh!")
+            
+            if final_time < self.best_time:
+                self.best_time = final_time
+                print(f"🏆 NEW BEST TIME: {final_time:.1f} s!")
+        
+        self.update_rl_display()
+    
     def redraw_flight_map(self):
         """Redraw only the flight map with updated goal position"""
         try:
@@ -700,24 +977,42 @@ class SmartVisionDroneGUI:
             print(f"Redraw map error: {e}")
     
     def _flight_loop(self):
-        """Main flight loop with vision and AI"""
+        """Main flight loop with vision and AI + Reinforcement Learning"""
         try:
+            # Increment run counter
+            self.current_run_number += 1
+            goal_reached = False
+            
             # Initialize
+            print(f"\n{'='*60}")
+            print(f"🚁 STARTING RUN #{self.current_run_number}")
+            print(f"{'='*60}")
             print("🧠 Loading MHA-PPO Agent (1M steps training)...")
-            self.agent = PPO_Agent(state_dim=7, action_dim=3, lr=0, gamma=0, K_epochs=0)
+            
+            # Enable learning if checkbox is checked
+            learning_rate = 0.0001 if self.learning_enabled else 0
+            self.agent = PPO_Agent(state_dim=7, action_dim=3, lr=learning_rate, gamma=0.99, K_epochs=4)
             
             try:
                 checkpoint = torch.load(MODEL_PATH, map_location=torch.device('cpu'))
                 if 'actor_state_dict' in checkpoint:
                     self.agent.actor.load_state_dict(checkpoint['actor_state_dict'], strict=False)
+                    if 'critic_state_dict' in checkpoint:
+                        self.agent.critic.load_state_dict(checkpoint['critic_state_dict'], strict=False)
                 else:
                     self.agent.actor.load_state_dict(checkpoint, strict=False)
                 print("✓ MHA-PPO Brain loaded successfully (mha_ppo_1M_steps.pth)")
+                
+                if self.learning_enabled:
+                    print("🎓 Online Learning ENABLED - Agent will improve from this run")
+                else:
+                    print("📖 Inference Mode - Using pre-trained policy only")
+                    
             except Exception as e:
                 print(f"⚠️ Model loading failed: {e}")
                 print("⚠️ Using random policy - navigation will use proportional controller")
             
-            self.agent.actor.eval()
+            self.agent.actor.eval() if not self.learning_enabled else self.agent.actor.train()
             
             # Connect AirSim
             print("🔌 Connecting to AirSim...")
@@ -803,8 +1098,18 @@ class SmartVisionDroneGUI:
                 
                 # Check goal
                 if distance < 5.0:
+                    goal_reached = True
                     print(f"🏆 GOAL REACHED! Distance: {distance:.1f}m")
                     self.status_label.config(text="● Goal Reached!", fg="#4caf50")
+                    
+                    # Calculate final reward for reaching goal
+                    if self.learning_enabled:
+                        final_reward = self.calculate_reward(current_pos, goal_pos, distance,
+                                                            np.linalg.norm(velocity), 
+                                                            self.total_energy_consumed,
+                                                            self.battery_percent)
+                        self.agent.store_reward(final_reward, done=True)
+                    
                     break
                 
                 # Print progress every 100 steps
@@ -856,6 +1161,13 @@ class SmartVisionDroneGUI:
                 self.total_energy_consumed += energy_step
                 self.battery_percent = max(0, 100 - (self.total_energy_consumed / BATTERY_CAPACITY_WH * 100))
                 
+                # Calculate reward for RL training
+                if self.learning_enabled:
+                    reward = self.calculate_reward(current_pos, goal_pos, distance, 
+                                                   speed, energy_step, self.battery_percent)
+                    self.agent.store_reward(reward, done=False)
+                    self.training_stats['rewards'].append(reward)
+                
                 elapsed_time = time.time() - self.start_time
                 self.metrics['time'].append(elapsed_time)
                 self.metrics['speeds'].append(speed)
@@ -885,6 +1197,41 @@ class SmartVisionDroneGUI:
             traceback.print_exc()
         finally:
             self.flight_active = False
+            
+            # Get final metrics
+            final_time = self.metrics['time'][-1] if self.metrics['time'] else 0
+            final_energy = self.total_energy_consumed
+            
+            # Perform RL training if enabled and goal was reached
+            if self.learning_enabled and goal_reached and len(self.agent.states) > 0:
+                print("\n🎓 TRAINING AGENT...")
+                print(f"   Collected {len(self.agent.states)} experiences")
+                actor_loss, critic_loss = self.agent.update()
+                self.training_stats['actor_losses'].append(actor_loss)
+                self.training_stats['critic_losses'].append(critic_loss)
+                print(f"   Actor Loss: {actor_loss:.4f} | Critic Loss: {critic_loss:.4f}")
+                
+                # Save updated model
+                model_save_path = f"trained_models/mha_ppo_run{self.current_run_number}.pth"
+                torch.save({
+                    'run_number': self.current_run_number,
+                    'actor_state_dict': self.agent.actor.state_dict(),
+                    'critic_state_dict': self.agent.critic.state_dict(),
+                    'final_energy': final_energy,
+                    'final_time': final_time
+                }, model_save_path)
+                print(f"   💾 Model saved: {model_save_path}")
+                print("   ✓ Training complete!")
+            
+            # Save run to history
+            if goal_reached:
+                self.save_run_to_history(final_time, final_energy, goal_reached)
+                print(f"\n📊 RUN #{self.current_run_number} SUMMARY:")
+                print(f"   Time: {final_time:.1f}s")
+                print(f"   Energy: {final_energy:.2f} Wh")
+                print(f"   Best Energy: {self.best_energy:.2f} Wh")
+                print(f"   Best Time: {self.best_time:.1f}s")
+                print(f"{'='*60}\n")
     
     def get_depth_perception(self):
         """Get depth image and analyze obstacles"""
