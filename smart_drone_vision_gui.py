@@ -35,43 +35,56 @@ from matplotlib.figure import Figure
 # =============================================================================
 
 class MHA_Actor(nn.Module):
-    """Multi-Head Attention Actor Network for PPO"""
-    def __init__(self, state_dim, action_dim, num_heads=4, hidden_dim=128):
+    """Multi-Head Attention Actor Network for PPO - Compatible with mha_ppo_1M_steps.pth"""
+    def __init__(self, state_dim, action_dim, num_heads=4, embed_dim=64):
         super(MHA_Actor, self).__init__()
         
         self.state_dim = state_dim
         self.action_dim = action_dim
         
-        self.embedding = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.Tanh()
-        )
+        # Input embedding layer to project state to embed_dim
+        self.input_projection = nn.Linear(state_dim, embed_dim)
         
-        self.attention = nn.MultiheadAttention(
-            embed_dim=hidden_dim,
-            num_heads=num_heads,
-            batch_first=True
-        )
+        # Multi-Head Attention layer
+        self.mha = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads, batch_first=True)
         
-        self.fc1 = nn.Linear(hidden_dim, 64)
-        self.fc2 = nn.Linear(64, action_dim)
+        # Fully connected layers after attention
+        self.fc1 = nn.Linear(embed_dim, 128)
+        self.fc2 = nn.Linear(128, 64)
+        
+        # Output layers for mean and log_std of action distribution
+        self.mean_layer = nn.Linear(64, action_dim)
+        self.log_std_layer = nn.Linear(64, action_dim)
+        
+        # Activation functions
+        self.relu = nn.ReLU()
         self.tanh = nn.Tanh()
     
     def forward(self, state):
-        x = self.embedding(state)
+        # Project input state to embedding dimension
+        x = self.input_projection(state)
         
-        if len(x.shape) == 1:
+        # Multi-Head Attention expects (batch, seq_len, embed_dim)
+        # Since we have a single state vector, we add a sequence dimension
+        if x.dim() == 1:
             x = x.unsqueeze(0).unsqueeze(0)
-        elif len(x.shape) == 2:
-            x = x.unsqueeze(1)
+        elif x.dim() == 2:
+            x = x.unsqueeze(1)  # (batch, 1, embed_dim)
         
-        attn_output, _ = self.attention(x, x, x)
-        x = attn_output.squeeze(1)
+        # Apply Multi-Head Attention (self-attention)
+        attn_output, _ = self.mha(x, x, x)
         
-        x = self.tanh(self.fc1(x))
-        action = self.tanh(self.fc2(x))
+        # Remove sequence dimension
+        x = attn_output.squeeze(1)  # (batch, embed_dim)
         
-        return action
+        # Pass through fully connected layers
+        x = self.relu(self.fc1(x))
+        x = self.relu(self.fc2(x))
+        
+        # Get mean for action (we only use mean for inference, not log_std)
+        mean = self.tanh(self.mean_layer(x))  # Bounded actions [-1, 1]
+        
+        return mean
 
 
 class PPO_Agent:
@@ -102,7 +115,7 @@ class PPO_Agent:
 # CONFIGURATION
 # =============================================================================
 
-MODEL_PATH = "energy_saving_brain.pth"
+MODEL_PATH = "mha_ppo_1M_steps.pth"  # Trained MHA-PPO model with 1M steps
 DEFAULT_GOAL_X = 100.0
 DEFAULT_GOAL_Y = 100.0
 P_HOVER = 200.0
@@ -690,7 +703,7 @@ class SmartVisionDroneGUI:
         """Main flight loop with vision and AI"""
         try:
             # Initialize
-            print("🧠 Loading PPO Agent...")
+            print("🧠 Loading MHA-PPO Agent (1M steps training)...")
             self.agent = PPO_Agent(state_dim=7, action_dim=3, lr=0, gamma=0, K_epochs=0)
             
             try:
@@ -699,9 +712,10 @@ class SmartVisionDroneGUI:
                     self.agent.actor.load_state_dict(checkpoint['actor_state_dict'], strict=False)
                 else:
                     self.agent.actor.load_state_dict(checkpoint, strict=False)
-                print("✓ Brain loaded")
-            except:
-                print("⚠️ Using random policy")
+                print("✓ MHA-PPO Brain loaded successfully (mha_ppo_1M_steps.pth)")
+            except Exception as e:
+                print(f"⚠️ Model loading failed: {e}")
+                print("⚠️ Using random policy - navigation will use proportional controller")
             
             self.agent.actor.eval()
             
