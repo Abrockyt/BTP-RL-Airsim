@@ -1,7 +1,15 @@
 {
   "SettingsVersion": 1.2,
   "SimMode": "Multirotor",
-  
+  "ClockSpeed": 1.0,
+  "ViewMode": "SpringArmChase",
+  "LocalHostIp": "127.0.0.1",
+  "Wind": {
+    "X": 8,
+    "Y": -4,
+    "Z": 0,
+    "Enabled": true
+  },
   "Recording": {
     "RecordOnMove": false,
     "RecordInterval": 0.05,
@@ -9,7 +17,6 @@
       { "CameraName": "0", "ImageType": 0, "PixelsAsFloat": false, "Compress": true }
     ]
   },
-  
   "CameraDefaults": {
     "CaptureSettings": [
       {
@@ -22,69 +29,53 @@
       }
     ]
   },
-  
   "Vehicles": {
-    "SimpleFlight": {
-      "VehicleType": "SimpleFlight",
-      "DefaultVehicleState": "Armed",
-      "AutoCreate": true,
-      "PawnPath": "",
-      "EnableCollisionPassthrogh": false,
-      "EnableCollisions": true,
-      "AllowAPIAlways": true,
-      "RC": {
-        "RemoteControlID": 0,
-        "AllowAPIWhenDisconnected": false
-      },
-      "Cameras": {
-        "0": {
-          "CameraName": "0",
-          "X": 0.50, "Y": 0.00, "Z": 0.00,
-          "Pitch": 0.0, "Roll": 0.0, "Yaw": 0.0,
-          "CaptureSettings": [
-            {
-              "ImageType": 0,
-              "Width": 1920,
-              "Height": 1080,
-              "FOV_Degrees": 90
-            }
-          ]
-        }
-      },
+    "Drone1": {
+      "VehicleType": "SimpleFlight", "X": 0, "Y": 0, "Z": 0,
+      "DefaultVehicleState": "Armed", "AutoCreate": true, "EnableCollisions": true, "AllowAPIAlways": true,
       "Sensors": {
-        "Imu": {
-          "SensorType": 2,
-          "Enabled": true
-        },
-        "Gps": {
-          "SensorType": 3,
-          "Enabled": true
-        },
-        "Magnetometer": {
-          "SensorType": 4,
-          "Enabled": true
-        },
-        "Distance": {
-          "SensorType": 5,
-          "Enabled": true,
-          "MinDistance": 0.2,
-          "MaxDistance": 40.0
-        },
-        "Lidar1": {
-          "SensorType": 6,
-          "Enabled": true,
-          "NumberOfChannels": 16,
-          "RotationsPerSecond": 10,
-          "PointsPerSecond": 100000,
-          "X": 0, "Y": 0, "Z": -0.5,
-          "Roll": 0, "Pitch": 0, "Yaw": 0,
-          "VerticalFOVUpper": 15,
-          "VerticalFOVLower": -15,
-          "HorizontalFOVStart": -180,
-          "HorizontalFOVEnd": 180,
-          "DrawDebugPoints": true,
-          "DataFrame": "SensorLocalFrame"
-        }
+        "Barometer": { "SensorType": 1, "Enabled": true, "PressureFactorSigma": 0.001825, "PressureFactorTau": 3600 },
+        "ImuSensor1": { "SensorType": 2, "Enabled": true },
+        "LidarSensor1": { "SensorType": 6, "Enabled": true, "DrawDebugPoints": true, "Range": 20, "DataFrame": "SensorLocalFrame" },
+        "DistanceSensor1": { "SensorType": 5, "Enabled": true, "DrawDebugPoints": true }
+      },
+      "Cameras": { "0": { "CameraName": "0", "X": 0.50, "Y": 0.00, "Z": 0.00, "Pitch": 0.0, "Roll": 0.0, "Yaw": 0.0 } }
+    },
+    "Drone2": {
+      "VehicleType": "SimpleFlight", "X": 0, "Y": 3, "Z": 0,
+      "DefaultVehicleState": "Armed", "AutoCreate": true, "EnableCollisions": true, "AllowAPIAlways": true,
+      "Sensors": {
+        "Barometer": { "SensorType": 1, "Enabled": true },
+        "ImuSensor1": { "SensorType": 2, "Enabled": true },
+        "DistanceSensor1": { "SensorType": 5, "Enabled": true }
+      },
+      "Cameras": { "0": { "CameraName": "0", "X": 0.50, "Y": 0.00, "Z": 0.00 } }
+    },
+    "Drone3": {
+      "VehicleType": "SimpleFlight", "X": 0, "Y": 6, "Z": 0,
+      "DefaultVehicleState": "Armed", "AutoCreate": true, "EnableCollisions": true, "AllowAPIAlways": true,
+      "Sensors": {
+        "Barometer": { "SensorType": 1, "Enabled": true },
+        "ImuSensor1": { "SensorType": 2, "Enabled": true },
+        "DistanceSensor1": { "SensorType": 5, "Enabled": true }
+      }
+    },
+    "Drone4": {
+      "VehicleType": "SimpleFlight", "X": 0, "Y": 9, "Z": 0,
+      "DefaultVehicleState": "Armed", "AutoCreate": true, "EnableCollisions": true, "AllowAPIAlways": true,
+      "Sensors": {
+        "Barometer": { "SensorType": 1, "Enabled": true },
+        "ImuSensor1": { "SensorType": 2, "Enabled": true },
+        "DistanceSensor1": { "SensorType": 5, "Enabled": true }
+      }
+    },
+    "Drone5": {
+      "VehicleType": "SimpleFlight", "X": 0, "Y": 12, "Z": 0,
+      "DefaultVehicleState": "Armed", "AutoCreate": true, "EnableCollisions": true, "AllowAPIAlways": true,
+      "Sensors": {
+        "Barometer": { "SensorType": 1, "Enabled": true },
+        "ImuSensor1": { "SensorType": 2, "Enabled": true },
+        "DistanceSensor1": { "SensorType": 5, "Enabled": true }
       }
     }
   }
