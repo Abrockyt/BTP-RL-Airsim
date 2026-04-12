@@ -599,6 +599,12 @@ class SmartVisionDroneGUI:
         }
         self.start_time = None
         
+        # YOLOv8 for waste detection
+        from ultralytics import YOLO
+        print("Loading YOLOv8...")
+        self.yolo_model = YOLO('yolov8n.pt')
+        print("YOLOv8 loaded successfully.")
+        
         # Battery
         self.battery_percent = 100.0
         self.total_energy_consumed = 0.0
@@ -1189,7 +1195,7 @@ class SmartVisionDroneGUI:
             print(f"Graph error: {e}")
     
     def update_vision_display(self):
-        """Update depth vision visualization"""
+        """Update depth vision visualization with YOLOv8"""
         if self.current_depth_image is not None:
             try:
                 # Convert depth image to displayable format
@@ -1199,6 +1205,26 @@ class SmartVisionDroneGUI:
                 depth_normalized = np.clip(depth_img / 20.0, 0, 1)
                 depth_colored = (depth_normalized * 255).astype(np.uint8)
                 depth_colored = cv2.applyColorMap(depth_colored, cv2.COLORMAP_JET)
+
+                import math
+                
+                # Run YOLOv8 on the depth map
+                depth_gray = (depth_normalized * 255).astype(np.uint8)
+                depth_rgb_yolo = cv2.cvtColor(depth_gray, cv2.COLOR_GRAY2RGB)
+                
+                if hasattr(self, 'yolo_model'):
+                    results = self.yolo_model(depth_rgb_yolo, verbose=False)
+                    for r in results:
+                        for box in r.boxes:
+                            x1, y1, x2, y2 = map(int, box.xyxy[0])
+                            conf = math.ceil((box.conf[0] * 100)) / 100
+                            cls = int(box.cls[0])
+                            
+                            # Draw bounding box on the colored depth map
+                            cv2.rectangle(depth_colored, (x1, y1), (x2, y2), (255, 0, 255), 2)
+                            cv2.putText(depth_colored, f"{self.yolo_model.names[cls]} {conf}", 
+                                        (max(0, x1), max(35, y1 - 10)), 
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
                 
                 # Resize for display
                 depth_resized = cv2.resize(depth_colored, (420, 250))
@@ -2043,7 +2069,7 @@ class SmartVisionDroneGUI:
         try:
             responses = safe_airsim_call(
                 self.client.simGetImages,
-                [airsim.ImageRequest("0", airsim.ImageType.DepthPerspective, pixels_as_float=True, compress=False)]
+                [airsim.ImageRequest("0", airsim.ImageType.DepthPlanar, pixels_as_float=True, compress=False)]
             )
             
             if not responses:
