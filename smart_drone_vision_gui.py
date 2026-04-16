@@ -2044,18 +2044,41 @@ class SmartVisionDroneGUI:
                 
                 # Save updated model
                 model_save_path = f"trained_models/mha_ppo_run{self.current_run_number}.pth"
-                torch.save({
+                trained_weights = {
                     'run_number': self.current_run_number,
                     'actor_state_dict': self.agent.actor.state_dict(),
                     'critic_state_dict': self.agent.critic.state_dict(),
                     'final_energy': final_energy,
-                    'final_time': final_time
-                }, model_save_path)
+                    'final_time': final_time,
+                    'actor_loss': actor_loss,
+                    'critic_loss': critic_loss
+                }
+                torch.save(trained_weights, model_save_path)
+                # Ensure the NEXT run explicitly loads this updated intelligence!
+                torch.save(trained_weights, MODEL_PATH) 
+                
                 print(f"   💾 Model saved: {model_save_path}")
+                print(f"   🧠 Model overwrote {MODEL_PATH} for continuous learning across runs!")
                 print("   ✓ Training complete!")
             
             # Save run to history
             if goal_reached:
+                # Save RL Data to a physical CSV file across all runs
+                csv_file = "rl_training_data_log.csv"
+                import os
+                file_exists = os.path.isfile(csv_file)
+                try:
+                    with open(csv_file, 'a') as f:
+                        if not file_exists:
+                            f.write("Run_Number,Final_Time_Sec,Energy_Wh,Best_Energy_Wh,Actor_Loss,Critic_Loss\n")
+                        
+                        a_loss = actor_loss if 'actor_loss' in locals() else 0.0
+                        c_loss = critic_loss if 'critic_loss' in locals() else 0.0
+                        f.write(f"{self.current_run_number},{final_time:.2f},{final_energy:.2f},{self.best_energy if self.best_energy != float('inf') else final_energy:.2f},{a_loss:.4f},{c_loss:.4f}\n")
+                    print(f"\n   📈 [SUCCESS] RL training data explicitly saved to physical file: {csv_file}")
+                except Exception as e:
+                    print(f"\n   ⚠️ Could not save physical RL CSV: {e}")
+
                 self.save_run_to_history(final_time, final_energy, goal_reached)
                 print(f"\n📊 RUN #{self.current_run_number} SUMMARY:")
                 print(f"   Time: {final_time:.1f}s")

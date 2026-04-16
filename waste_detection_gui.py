@@ -94,15 +94,15 @@ class WasteDetectionGUI:
         style.configure("Treeview.Heading", font=('Arial', 10, 'bold'))
         style.configure("Treeview", font=('Arial', 10), rowheight=25)
         
-        self.shape_table = ttk.Treeview(table_frame, columns=("ID", "Shape", "Location X", "Location Y"), show="headings", height=5)
+        self.shape_table = ttk.Treeview(table_frame, columns=("ID", "Type", "Location", "Quantity"), show="headings", height=5)
         self.shape_table.heading("ID", text="ID")
-        self.shape_table.heading("Shape", text="Waste Object Shape")
-        self.shape_table.heading("Location X", text="Location X")
-        self.shape_table.heading("Location Y", text="Location Y")
+        self.shape_table.heading("Type", text="Detection Type")
+        self.shape_table.heading("Location", text="Location (X,Y)")
+        self.shape_table.heading("Quantity", text="Quantity")
         self.shape_table.column("ID", width=50, anchor=tk.CENTER)
-        self.shape_table.column("Shape", width=150, anchor=tk.CENTER)
-        self.shape_table.column("Location X", width=100, anchor=tk.CENTER)
-        self.shape_table.column("Location Y", width=100, anchor=tk.CENTER)
+        self.shape_table.column("Type", width=150, anchor=tk.CENTER)
+        self.shape_table.column("Location", width=150, anchor=tk.CENTER)
+        self.shape_table.column("Quantity", width=100, anchor=tk.CENTER)
         self.shape_table.pack(fill=tk.X)
         
         # Telemetry
@@ -188,16 +188,21 @@ class WasteDetectionGUI:
                 # Fly to a high patrol altitude to spot areas of interest
                 state = c.getMultirotorState(vehicle_name=self.vehicle_name)
                 z = state.kinematics_estimated.position.z_val
-                target_z = z - 8.0  
+                target_z = z - 12.0  
                 
-                self.log_message("Ascending to high patrol altitude (8m up)...")
-                c.moveToZAsync(target_z, 3, vehicle_name=self.vehicle_name).join()
+                self.log_message("Ascending to stable high patrol altitude (12m up)...")
+                c.moveToZAsync(target_z, 5.0, vehicle_name=self.vehicle_name).join()
                 
                 # Command a hover to stabilize before moving
                 c.hoverAsync(vehicle_name=self.vehicle_name).join()
                 
-                self.log_message("Starting river patrol... Moving forward.")
-                c.moveByVelocityAsync(3.0, 0, 0, 100, vehicle_name=self.vehicle_name).join()
+                self.log_message("Starting river patrol... Moving forward very slowly & stably.")
+                # moveByVelocityZAsync ensures it never drops down, maintaining perfect height!
+                # We use ForwardOnly drivetrain and fixed YawMode to keep the drone completely steady without side-drifting
+                c.moveByVelocityZAsync(1.5, 0, target_z, 3000, 
+                                       drivetrain=airsim.DrivetrainType.ForwardOnly, 
+                                       yaw_mode=airsim.YawMode(False, 0),
+                                       vehicle_name=self.vehicle_name)
             except Exception as e:
                 print("Deployment error:", e)
                 self.log_message(f"Deployment error: {e}", color="red")
@@ -221,26 +226,8 @@ class WasteDetectionGUI:
                 state = c.getMultirotorState(vehicle_name=self.vehicle_name)
                 current_z = state.kinematics_estimated.position.z_val
                 
-                # Lower altitude gently to drop to 4m height to maintain safe distance from water
-                zoom_z = current_z + 4.0
-                c.moveToZAsync(zoom_z, 2.0, vehicle_name=self.vehicle_name).join()
-                c.hoverAsync(vehicle_name=self.vehicle_name).join()
-                
-                # Enable strict shape analysis for flight_loop
-                self.is_zoomed_in = True
-                
-                # Full confirmation: let it verify the shape over 20+ frames while holding perfectly still
-                time.sleep(6.0) 
-                
-                self.is_zoomed_in = False
-                
-                self.log_message("Shapes confirmed. Regaining altitude and resuming patrol.", color="green")
-                # Go back up
-                c.moveToZAsync(current_z, 3, vehicle_name=self.vehicle_name).join()
-                
-                # Cooldown so we don't immediately trigger the exact same block
-                c.moveByVelocityAsync(3.0, 0, 0, 100, vehicle_name=self.vehicle_name)
-                time.sleep(4.0) 
+                # We removed the zoom inspection entirely so it flies non-stop!
+                pass
                 
             except Exception as e:
                 self.log_message(f"Inspection error: {e}", color="red")
@@ -312,15 +299,30 @@ class WasteDetectionGUI:
             shape_color_map = {}
             color_index = 0
             
-            # Plot Verified Wastes
-            for w in self.verified_wastes:
-                s = w['shape']
+            # Use clustered array if computed, otherwise fallback
+            for item in self.shape_table.get_children():
+                vals = self.shape_table.item(item)['values']
+                # vals = (ID, Type, Location. Quantity)
+                s = vals[1] # shape
+                loc = vals[2] # "X:..., Y:..."
+                
+                import re
+                try:
+                    # extract floats
+                    nums = re.findall(r"[-+]?\d*\.\d+|\d+", loc)
+                    wx, wy = float(nums[0]), float(nums[1])
+                except:
+                    continue
+                    
+                qty = int(vals[3])
+                
                 if s not in shape_color_map:
                     shape_color_map[s] = colors[color_index % len(colors)]
                     color_index += 1
                     
-                ax.scatter(w['x'], w['y'], color=shape_color_map[s], s=100, zorder=5, label=s if s not in ax.get_legend_handles_labels()[1] else "")
-                ax.annotate(f"ID:{w['id']}", (w['x']+0.5, w['y']+0.5), fontsize=8, zorder=6)
+                # Bigger dot for bigger clusters
+                ax.scatter(wx, wy, color=shape_color_map[s], s=100 + (qty * 20), zorder=5, label=s if s not in ax.get_legend_handles_labels()[1] else "")
+                ax.annotate(f"{qty}x" if qty > 1 else f"ID:{vals[0]}", (wx+0.5, wy+0.5), fontsize=8, zorder=6)
                 
             ax.legend()
             
@@ -457,91 +459,116 @@ class WasteDetectionGUI:
                         
                         # Find contours strictly on the Depth Mask
                         contours, _ = cv2.findContours(depth_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        
+                        # Prevent multiple objects from claiming the same tracker in a single frame
+                        used_tracker_indices = set()
+                        
                         for cnt in contours:
                             area = cv2.contourArea(cnt)
                             
-                            # BEHAVIOR 1: Zoomed out Patrol (Detect blobs and halt)
-                            if not self.is_zoomed_in:
-                                # When flying at 15m, a large box looks like a tiny area (approx 10-30px). Wait till we see it to dive.
-                                if 8 < area < 5000:
-                                    x, y, w, h = cv2.boundingRect(cnt)
-                                    cv2.rectangle(img_bgr, (x, y), (x+w, y+h), (0, 165, 255), 2)
-                                    cv2.putText(img_bgr, "Investigating...", (x, max(y-5, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)
-                                    
-                                    # Trigger the dive procedure!
-                                    if not self.inspecting and self.patrolling:
-                                        self.inspect_objects()
-
-                            # BEHAVIOR 2: Zoomed in Inspection (Classify exact geometry constraints)
-                            else:
-                                # When zoomed in down to 10m, the blob's explicit pixel surface area increases safely without hitting the water
-                                if 40 < area < 40000:
-                                    peri = cv2.arcLength(cnt, True)
-                                    approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
-                                    x, y, w, h = cv2.boundingRect(approx)
-                                    aspect_ratio = float(w)/h
-                                    
-                                    # Name shape based on geometry
-                                    shape_name = "Waste (Unclassified)"
-                                    if len(approx) == 3:
-                                        shape_name = "Triangle"
-                                    elif len(approx) == 4:
-                                        if 0.85 <= aspect_ratio <= 1.15:
-                                            shape_name = "Square Box"
-                                        else:
-                                            shape_name = "Rectangle"
+                            # FAST DETECTION BEHAVIOR:
+                            if 15 < area < 40000:
+                                peri = cv2.arcLength(cnt, True)
+                                approx = cv2.approxPolyDP(cnt, 0.04 * peri, True)
+                                x, y, w, h = cv2.boundingRect(approx)
+                                aspect_ratio = float(w)/h
+                                
+                                # Name shape based on geometry
+                                shape_name = "Waste (Unclassified)"
+                                if len(approx) == 3:
+                                    shape_name = "Triangle"
+                                elif len(approx) == 4:
+                                    if 0.85 <= aspect_ratio <= 1.15:
+                                        shape_name = "Square Box"
                                     else:
-                                        circularity = 4 * np.pi * (area / (peri * peri)) if peri > 0 else 0
-                                        if circularity > 0.75:
-                                            shape_name = "Circle/Sphere"
-                                        else:
-                                            shape_name = "Cylinder"
+                                        shape_name = "Rectangle"
+                                else:
+                                    circularity = 4 * np.pi * (area / (peri * peri)) if peri > 0 else 0
+                                    if circularity > 0.75:
+                                        shape_name = "Circle/Sphere"
+                                    else:
+                                        shape_name = "Cylinder"
+                                        
+                                cv2.rectangle(img_bgr, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                                cv2.putText(img_bgr, f"{shape_name}", (x, max(y-5, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                                
+                                import math
+                                # Extremely strict tracking: match must be within 40 pixels, preventing grouped items resolving as 1
+                                cx, cy = x + w//2, y + h//2
+                                matched = False
+                                for i, (tx, ty, tshape, frames_seen, confirmed) in enumerate(self.active_tracker):
+                                    if i not in used_tracker_indices and math.hypot(tx - cx, ty - cy) < 40:
+                                        new_frames = frames_seen + 1
+                                        new_confirmed = confirmed
+                                        
+                                        if new_frames >= 3 and not confirmed:
+                                            new_confirmed = True
                                             
-                                    cv2.rectangle(img_bgr, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                                    cv2.putText(img_bgr, f"{shape_name} (Confirming)", (x, max(y-5, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                                    
-                                    import math
-                                    # Full Verification tracking logic: require multi-frame confirmation
-                                    cx, cy = x + w//2, y + h//2
-                                    matched = False
-                                    for i, (tx, ty, tshape, frames_seen, confirmed) in enumerate(self.active_tracker):
-                                        # If centroid is within 150 pixels on zoomed screen, consider it same object update
-                                        if math.hypot(tx - cx, ty - cy) < 150:
-                                            new_frames = frames_seen + 1
-                                            new_confirmed = confirmed
+                                            w_id = self.waste_id_counter
+                                            self.waste_id_counter += 1
                                             
-                                            if new_frames >= 10 and not confirmed:
-                                                new_confirmed = True
-                                                self.global_shape_counts[shape_name] += 1
-                                                
-                                                w_id = self.waste_id_counter
-                                                self.waste_id_counter += 1
-                                                self.verified_wastes.append({
-                                                    'id': w_id,
-                                                    'shape': shape_name,
-                                                    'x': x_val,
-                                                    'y': y_val
-                                                })
-                                                
-                                                self.log_message(f"FULLY VERIFIED: [ID {w_id}] {shape_name} at X:{x_val:.2f}, Y:{y_val:.2f}", color="green")
-                                                
-                                            self.active_tracker[i] = (cx, cy, shape_name, new_frames, new_confirmed)
-                                            matched = True
-                                            break
-                                    
-                                    if not matched:
-                                        # Start tracking a new object: (cx, cy, shape, frames_seen, confirmed)
-                                        self.active_tracker.append((cx, cy, shape_name, 1, False))
-                                    
-                                    object_count += 1
+                                            drone_x = state.kinematics_estimated.position.x_val
+                                            drone_y = state.kinematics_estimated.position.y_val
+                                            
+                                            self.verified_wastes.append({
+                                                'id': w_id,
+                                                'shape': shape_name,
+                                                'x': drone_x,
+                                                'y': drone_y,
+                                                'qty': 1
+                                            })
+                                            self.log_message(f"DETECTED: [ID {w_id}] {shape_name} at X:{drone_x:.1f}, Y:{drone_y:.1f}", color="green")
+                                            
+                                        self.active_tracker[i] = (cx, cy, shape_name, new_frames, new_confirmed)
+                                        used_tracker_indices.add(i)
+                                        matched = True
+                                        break
+                                
+                                if not matched:
+                                    self.active_tracker.append((cx, cy, shape_name, 1, False))
+                                
+                                object_count += 1
                                     
                         # Update the shape table rows
                         for row in self.shape_table.get_children():
                             self.shape_table.delete(row)
                             
+                        # Here we cluster objects that are close to each other into a "Bunch" for the GUI table and map
+                        clustered_wastes = []
+                        if len(self.verified_wastes) > 0:
+                            processed = set()
+                            for idx, w1 in enumerate(self.verified_wastes):
+                                if idx in processed:
+                                    continue
+                                
+                                group_shapes = {w1['shape']: 1}
+                                qty = 1
+                                
+                                group_x_m = w1['x']
+                                group_y_m = w1['y']
+                                processed.add(idx)
+                                
+                                # Find neighbors
+                                for idx2, w2 in enumerate(self.verified_wastes):
+                                    if idx2 not in processed:
+                                        import math
+                                        if math.hypot(w1['x'] - w2['x'], w1['y'] - w2['y']) < 5.0: # Close proximity grouping (AirSim meters)
+                                            qty += 1
+                                            group_shapes[w2['shape']] = group_shapes.get(w2['shape'], 0) + 1
+                                            processed.add(idx2)
+                                            group_x_m = (group_x_m + w2['x'])/2 # roughly center
+                                            group_y_m = (group_y_m + w2['y'])/2
+                                            
+                                if qty > 1:
+                                    majority_shape = max(group_shapes, key=group_shapes.get)
+                                    name = f"Cluster ({majority_shape})" if len(group_shapes) == 1 else "Mixed Cluster"
+                                    clustered_wastes.append({'id': w1['id'], 'shape': name, 'x':group_x_m, 'y':group_y_m, 'qty':qty})
+                                else:
+                                    clustered_wastes.append({'id': w1['id'], 'shape': w1['shape'], 'x':group_x_m, 'y':group_y_m, 'qty':1})
+                            
                         # Insert verified specific items into table
-                        for w in self.verified_wastes:
-                            self.shape_table.insert("", tk.END, values=(w['id'], w['shape'], f"{w['x']:.2f}", f"{w['y']:.2f}"))
+                        for w in (clustered_wastes if 'clustered_wastes' in locals() else self.verified_wastes):
+                            self.shape_table.insert("", tk.END, values=(w['id'], w['shape'], f"X:{w['x']:.1f}, Y:{w['y']:.1f}", w['qty']))
                                 
                         self.waste_var.set(f"Waste Detected: {object_count}")
                         self.update_image(self.rgb_label, img_bgr)
