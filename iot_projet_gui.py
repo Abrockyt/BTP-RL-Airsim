@@ -2315,6 +2315,7 @@ class SmartVisionDroneGUI:
         except Exception as e:
             print(f"⚠️ Multi-drone shutdown warning: {e}")
         print("\n🛑 Multi-drone scenario stopped")
+        self.print_academic_results_tables()
     
     def _check_inter_drone_collision(self, drone_pos, drone_name, safety_distance=12.0):
         """Return avoidance vector and risk flag based on nearby drone positions."""
@@ -3370,7 +3371,93 @@ class SmartVisionDroneGUI:
             print(f"   ⚠️ Error landing Drone 2: {e}")
         
         print("✓ Comparison race stopped and drones landed.")
+        self.print_academic_results_tables()
     
+    def print_academic_results_tables(self):
+        """Prints formatted academic tables containing experiment results to the console."""
+        print("\n\n" + "=" * 80)
+        print("          ACADEMIC SIMULATION RESULTS (TERMINAL EXPORT)")
+        print("=" * 80)
+
+        # --- Table 1: Algorithm Efficiency Comparison ---
+        print("\nTable 1: Algorithm Efficiency Comparison (MHA-PPO vs. GNN)")
+        print("-" * 80)
+        print(f"{'Metric':<25} | {'MHA-PPO (Drone 1)':<20} | {'GNN (Drone 2)':<20} | {'Improvement':<10}")
+        print("-" * 80)
+        
+        try:
+            mha_data = getattr(self, 'comp_data', {}).get('normal', {})
+            gnn_data = getattr(self, 'comp_data', {}).get('gnn', {})
+            
+            mha_energy = mha_data['energy'][-1] if len(mha_data.get('energy', [])) > 0 else 0.0
+            gnn_energy = gnn_data['energy'][-1] if len(gnn_data.get('energy', [])) > 0 else 0.0
+            
+            mha_batt = mha_data['battery'][-1] if len(mha_data.get('battery', [])) > 0 else 0.0
+            gnn_batt = gnn_data['battery'][-1] if len(gnn_data.get('battery', [])) > 0 else 0.0
+            
+            mha_time = mha_data['time'][-1] if len(mha_data.get('time', [])) > 0 else 0.0
+            gnn_time = gnn_data['time'][-1] if len(gnn_data.get('time', [])) > 0 else 0.0
+            
+            mha_speed = sum(mha_data['speed'])/len(mha_data['speed']) if len(mha_data.get('speed', [])) > 0 else 0.0
+            gnn_speed = sum(gnn_data['speed'])/len(gnn_data['speed']) if len(gnn_data.get('speed', [])) > 0 else 0.0
+            
+            energy_imp = ((mha_energy - gnn_energy) / mha_energy * 100) if mha_energy > 0 else 0.0
+            
+            print(f"{'Energy Consumed (Wh)':<25} | {mha_energy:<20.4f} | {gnn_energy:<20.4f} | {energy_imp:+.2f}%")
+            print(f"{'Final Battery (%)':<25} | {mha_batt:<20.2f} | {gnn_batt:<20.2f} | {'-':<10}")
+            print(f"{'Flight Time (s)':<25} | {mha_time:<20.2f} | {gnn_time:<20.2f} | {'-':<10}")
+            print(f"{'Avg Speed (m/s)':<25} | {mha_speed:<20.2f} | {gnn_speed:<20.2f} | {'-':<10}")
+        except Exception as e:
+            print(f"Error generating Table 1: {e}")
+        print("-" * 80)
+
+        # --- Table 2: Swarm Data Freshness (Age of Information) ---
+        print("\nTable 2: Swarm Data Freshness & Communication (Age of Information - AoI)")
+        print("-" * 80)
+        print(f"{'Metric':<40} | {'Value':<30}")
+        print("-" * 80)
+        
+        try:
+            aoi_history = getattr(self, 'md_avg_aoi_history', [])
+            aoi_timers = getattr(self, 'md_aoi_timers', {})
+            aoi_penalties = getattr(self, 'md_aoi_penalty_history', [])
+            
+            avg_aoi = sum(aoi_history) / len(aoi_history) if len(aoi_history) > 0 else 0.0
+            
+            if isinstance(aoi_timers, dict) and aoi_timers:
+                max_aoi = max(aoi_timers.values())
+            else:
+                max_aoi = 0.0
+                
+            total_penalty = sum(aoi_penalties) if len(aoi_penalties) > 0 else 0.0
+            
+            print(f"{'Average Swarm AoI (s)':<40} | {avg_aoi:<30.4f}")
+            print(f"{'Max Individual AoI Delay (s)':<40} | {max_aoi:<30.4f}")
+            print(f"{'Total System Penalty Applied':<40} | {total_penalty:<30.4f}")
+        except Exception as e:
+            print(f"Error generating Table 2: {e}")
+        print("-" * 80)
+
+        # --- Table 3: Dynamic Obstacle & Collision Avoidance ---
+        print("\nTable 3: Dynamic Obstacle & Collision Avoidance (Swarm Scenarios)")
+        print("-" * 80)
+        print(f"{'Metric':<40} | {'Value':<30}")
+        print("-" * 80)
+        
+        try:
+            threats = getattr(self, 'md_threat_events', 0)
+            avoided = getattr(self, 'comm_avoidance_count', 0)
+            
+            success_rate = (avoided / threats * 100) if threats > 0 else (100.0 if avoided == 0 and threats == 0 else 0.0)
+            
+            print(f"{'Total Threat Events Generated':<40} | {threats:<30}")
+            print(f"{'Successful Collisions Avoided':<40} | {avoided:<30}")
+            print(f"{'Overall Safety Success Rate (%)':<40} | {success_rate:<30.2f}%")
+        except Exception as e:
+            print(f"Error generating Table 3: {e}")
+        print("-" * 80)
+        print("\n")
+
     def run(self):
         """Run GUI"""
         self.window.mainloop()
