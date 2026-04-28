@@ -156,30 +156,30 @@ class PPO_Agent:
         self.MseLoss = nn.MSELoss()
     
     def select_action(self, state, training=False):
-        state_tensor = torch.FloatTensor(state).to(self.device)
-        
+        state_tensor = torch.FloatTensor(state).to(self.device).unsqueeze(0)
+
         if training and self.lr > 0:
             # Training mode: sample from distribution
             with torch.no_grad():
                 action_mean = self.old_actor(state_tensor)
                 # Add noise for exploration
                 std = 0.3
-                action = action_mean + torch.randn_like(action_mean) * std
-                action = torch.clamp(action, -1, 1)
+                dist = torch.distributions.Normal(action_mean, torch.full_like(action_mean, std))
+                action = dist.sample()
+                log_prob = dist.log_prob(action).sum(dim=-1)
                 
-                # Store for training
-                if action_mean.dim() == 1:
-                    action_mean = action_mean.unsqueeze(0)
-                if state_tensor.dim() == 1:
-                    state_tensor = state_tensor.unsqueeze(0)
-                    
+                action_clamped = torch.clamp(action, -1.0, 1.0)
+
                 self.states.append(state_tensor.squeeze(0))
                 self.actions.append(action.squeeze(0))
+                self.log_probs.append(log_prob.squeeze(0))
+                
+                action = action_clamped
         else:
             # Inference mode: use mean action
             with torch.no_grad():
                 action = self.actor(state_tensor)
-        
+                action = torch.clamp(action, -1.0, 1.0)
         action_np = action.cpu().numpy()
         if len(action_np.shape) > 1:
             action_np = action_np[0]
@@ -199,7 +199,8 @@ class PPO_Agent:
         # Convert to tensors
         states = torch.stack(self.states).detach().to(self.device)
         actions = torch.stack(self.actions).detach().to(self.device)
-        
+        old_log_probs = torch.stack(self.log_probs).detach().to(self.device)
+
         # Calculate returns
         rewards = []
         discounted_reward = 0
@@ -208,45 +209,55 @@ class PPO_Agent:
                 discounted_reward = 0
             discounted_reward = reward + self.gamma * discounted_reward
             rewards.insert(0, discounted_reward)
-        
+
         rewards = torch.FloatTensor(rewards).to(self.device)
         rewards = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
-        
+
         total_actor_loss = 0
         total_critic_loss = 0
-        
+
         # PPO update
         for _ in range(self.K_epochs):
             # Current policy
             action_mean = self.actor(states)
             state_values = self.critic(states).squeeze()
+
+            # PPO surrogate loss
+            std = 0.3
+            dist = torch.distributions.Normal(action_mean, torch.full_like(action_mean, std))
+            new_log_probs = dist.log_prob(actions).sum(dim=-1)
             
             # Calculate advantages
             advantages = rewards - state_values.detach()
+
+            ratios = torch.exp(new_log_probs - old_log_probs)
+            surr1 = ratios * advantages
+            surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
             
-            # Simple policy loss (no log probs needed for deterministic)
-            actor_loss = -advantages.mean()
+            actor_loss = -torch.min(surr1, surr2).mean()
             critic_loss = self.MseLoss(state_values, rewards)
-            
-            # Update actor
+
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
             self.actor_optimizer.step()
-            
+
             # Update critic
             self.critic_optimizer.zero_grad()
             critic_loss.backward()
             self.critic_optimizer.step()
-            
+
             total_actor_loss += actor_loss.item()
             total_critic_loss += critic_loss.item()
-        
+
         # Update old policy
         self.old_actor.load_state_dict(self.actor.state_dict())
-        
+
         # Clear memory
         self.states = []
         self.actions = []
+        self.rewards = []
+        self.log_probs = []
+        self.dones = []
         self.rewards = []
         self.log_probs = []
         self.dones = []
@@ -499,7 +510,8 @@ class CollisionPredictor:
 # CONFIGURATION
 # =============================================================================
 
-MODEL_PATH = "mha_ppo_9D_best.pth"  # Preferred 9D MHA-PPO checkpoint
+MODEL_PATH = "mha_ppo_latest.pth"
+BEST_MODEL_PATH = "mha_ppo_9D_best.pth"
 DEFAULT_GOAL_X = 100.0
 DEFAULT_GOAL_Y = 100.0
 P_HOVER = 200.0
@@ -509,17 +521,18 @@ BATTERY_CAPACITY_WH = 100.0
 # HELPER FUNCTIONS
 # =============================================================================
 
-def safe_airsim_call(func, *args, max_retries=10, delay=0.05, **kwargs):
+def safe_airsim_call(func, *args, max_retries=10, delay=0.05, join_future=True, **kwargs):
     """
     Safely call AirSim functions with retry logic to handle IOLoop and msgpack errors
     Thread-safe with proper backoff for multi-drone operations
-    
+
     Args:
         func: AirSim function to call
-        max_retries: Maximum number of retry attempts  
+        max_retries: Maximum number of retry attempts
         delay: Delay between retries in seconds
+        join_future: Whether to join the future returned by the function
         *args,  **kwargs: Arguments to pass to the function
-    
+
     Returns:
         Function result or None if all retries fail
     """
@@ -527,7 +540,7 @@ def safe_airsim_call(func, *args, max_retries=10, delay=0.05, **kwargs):
         try:
             result = func(*args, **kwargs)
             # If result has a join method (Future), wait for completion
-            if hasattr(result, 'join'):
+            if join_future and hasattr(result, 'join'):
                 result.join()
             # Small delay to prevent IOLoop overload
             time.sleep(0.02)
@@ -641,7 +654,7 @@ class SmartVisionDroneGUI:
         self.current_run_number = 0
         self.best_energy = float('inf')
         self.best_time = float('inf')
-        self.learning_enabled = False  # Enable/disable online learning (disabled by default to prevent training errors)
+        self.learning_enabled = True  # Enable online learning by default
         self.rl_policy_active = False
         self.last_rl_action = np.zeros(3, dtype=np.float32)
         self.last_policy_mode = "INFERENCE"
@@ -666,7 +679,39 @@ class SmartVisionDroneGUI:
         os.makedirs('trained_models', exist_ok=True)
         
         self.create_widgets()
-    
+        self._load_historical_rl_data()
+        self.update_rl_display()
+        
+    def _load_historical_rl_data(self):
+        """Load previous run metrics from CSV so the drone doesn't reset to a 'fresh start' on reboot."""
+        import os, csv
+        target_x, target_y = int(self.goal_x), int(self.goal_y)
+        csv_file = f"rl_training_data_{target_x}_{target_y}.csv"
+        
+        self.current_run_number = 0
+        self.best_energy = float('inf')
+        self.best_time = float('inf')
+        
+        if os.path.isfile(csv_file):
+            try:
+                with open(csv_file, 'r') as f:
+                    reader = csv.DictReader(f)
+                    runs, energies, times = [], [], []
+                    for row in reader:
+                        try:
+                            runs.append(int(row.get('Run_Number', 0)))
+                            energies.append(float(row.get('Energy_Wh', float('inf'))))
+                            times.append(float(row.get('Final_Time_Sec', float('inf'))))
+                        except (ValueError, TypeError):
+                            continue
+                    if runs:
+                        self.current_run_number = max(runs)
+                        self.best_energy = min(energies) if energies else float('inf')
+                        self.best_time = min(times) if times else float('inf')
+                        print(f"📈 Loaded historical RL data for Goal({target_x},{target_y}): Resuming at Run #{self.current_run_number}, Best Energy: {self.best_energy:.2f}Wh")
+            except Exception as e:
+                print(f"⚠️ Could not read historical RL data: {e}")
+
     def create_widgets(self):
         # Header
         header_frame = tk.Frame(self.window, bg='#0d47a1', height=70)
@@ -1379,8 +1424,9 @@ class SmartVisionDroneGUI:
             # REDRAW MAP TO SHOW NEW GOAL
             self.redraw_flight_map()
             
-            messagebox.showinfo("Goal Updated", f"New goal set to:\nX: {new_x} m\nY: {new_y} m")
-            
+            # Reload RL data for the new coordinates
+            self._load_historical_rl_data()
+            self.update_rl_display()
         except ValueError:
             messagebox.showerror("Invalid Input", "Please enter valid numbers for X and Y coordinates!")
             self.goal_x_entry.delete(0, tk.END)
@@ -1519,7 +1565,7 @@ class SmartVisionDroneGUI:
         if len(self.run_history) > 1:
             current_energy = self.run_history[-1]['energy']
             prev_energy = self.run_history[-2]['energy']
-            improvement = ((prev_energy - current_energy) / prev_energy) * 100
+            improvement = ((prev_energy - current_energy) / prev_energy) * 100 if prev_energy != 0 else 0
             
             if improvement > 0:
                 self.improvement_label.config(
@@ -1659,6 +1705,13 @@ class SmartVisionDroneGUI:
     def _flight_loop(self):
         """Main flight loop with vision and AI + Reinforcement Learning"""
         try:
+            # Set up coordinate-specific variables
+            target_x = int(self.goal_x)
+            target_y = int(self.goal_y)
+            csv_file = f"rl_training_data_{target_x}_{target_y}.csv"
+            current_model_path = f"trained_models/mha_ppo_{target_x}_{target_y}_latest.pth"
+            best_model_path = f"trained_models/mha_ppo_{target_x}_{target_y}_best.pth"
+
             # Increment run counter
             self.current_run_number += 1
             goal_reached = False
@@ -1675,7 +1728,9 @@ class SmartVisionDroneGUI:
             print("🛡️ Collision logic: using trained-model-compatible HOUSE/POLE vision rules")
             
             try:
-                checkpoint = torch.load(MODEL_PATH, map_location=torch.device('cpu'))
+                target_model = current_model_path if os.path.exists(current_model_path) else (best_model_path if os.path.exists(best_model_path) else None)
+                if target_model: 
+                    checkpoint = torch.load(target_model, map_location=torch.device('cpu'))
                 
                 # Handle dimension mismatch (7D -> 9D state space)
                 if 'actor_state_dict' in checkpoint:
@@ -1719,7 +1774,7 @@ class SmartVisionDroneGUI:
                     # Old format, try direct loading
                     self.agent.actor.load_state_dict(checkpoint, strict=False)
                     
-                print(f"✓ MHA-PPO Brain loaded successfully ({MODEL_PATH})")
+                print(f"? MHA-PPO Brain loaded successfully ({target_model})")
                 
                 if self.learning_enabled:
                     print("🎓 Online Learning ENABLED - Agent will improve from this run")
@@ -1832,11 +1887,7 @@ class SmartVisionDroneGUI:
                 distance = np.linalg.norm(goal_pos - current_pos)
                 
                 # Check goal
-                if distance < 5.0:
-                    goal_reached = True
-                    print(f"🏆 GOAL REACHED! Distance: {distance:.1f}m")
-                    self.status_label.config(text="● Goal Reached!", fg="#4caf50")
-                    
+                if distance < 1.0:
                     # Calculate final reward for reaching goal
                     if self.learning_enabled:
                         final_reward = self.calculate_reward(current_pos, goal_pos, distance,
@@ -1869,80 +1920,42 @@ class SmartVisionDroneGUI:
                         print(f"💨 Wind mode navigation - Pressure: {self.air_pressure:.0f} Pa, Wind: {self.wind_magnitude:.1f} m/s")
                     obstacle_avoided = False  # Bypass vision-based obstacle avoidance
                 elif self.flight_mode == "NORMAL":
-                    # NORMAL MODE: Predictive TTC-based collision avoidance
-                    if vision_data and vision_data.get('raw_image') is not None:
-                        current_speed = float(np.linalg.norm(velocity))
-                        crash_imminent, ttc, avg_dist, avoid_dir = self.collision_predictor.predict_collision(
-                            vision_data['raw_image'], current_speed
-                        )
+# Get current altitude and ground-relative height
+                    state = safe_airsim_call(self.client.getMultirotorState)
+                    if state is None:
+                        print("⚠️ AirSim communication error, retrying...")
+                        time.sleep(0.1)
+                        continue
 
-                        # Fallback to the trained HOUSE/POLE rules for extra robustness.
-                        if not crash_imminent:
-                            will_collide, rule_dir = self.predict_collision()
-                            if will_collide:
-                                crash_imminent = True
-                                avoid_dir = rule_dir if rule_dir is not None else avoid_dir
+                    current_altitude = abs(state.kinematics_estimated.position.z_val)
+                    height_above_ground = current_altitude - self.ground_height
 
-                        if crash_imminent:
-                            self.current_obstacle_type = "CRASH_IMMINENT"
-                            forward_x = max(1.5, current_speed * 0.5)
-
-                            if avoid_dir == 'LEFT':
-                                safe_airsim_call(self.client.moveByVelocityAsync, forward_x, -5.2, -0.8, duration=0.45)
-                            elif avoid_dir == 'RIGHT':
-                                safe_airsim_call(self.client.moveByVelocityAsync, forward_x, 5.2, -0.8, duration=0.45)
-                            else:
-                                safe_airsim_call(self.client.moveByVelocityAsync, 2.0, 0.0, -4.2, duration=0.45)
-
-                            obstacle_avoided = True
-                            self.prev_velocity_cmd *= 0.5
-                            target_vx = 0.0
-                            target_vy = 0.0
-
-                            if step % 25 == 0:
-                                print(f"⚠️ TTC ALERT: {ttc:.2f}s | d={avg_dist:.1f}m | v={current_speed:.1f}m/s | evade={avoid_dir}")
-                
-                # Get current altitude and ground-relative height
-                state = safe_airsim_call(self.client.getMultirotorState)
-                if state is None:
-                    print("⚠️ AirSim communication error, retrying...")
-                    time.sleep(0.1)
-                    continue
-                    
-                current_altitude = abs(state.kinematics_estimated.position.z_val)
-                height_above_ground = current_altitude - self.ground_height
-                
-                # PROPORTIONAL CONTROLLER - Navigate to goal
-                if not obstacle_avoided:
+                    # PROPORTIONAL CONTROLLER - Navigate to goal
                     direction_to_goal = goal_pos - current_pos
                     distance_to_goal = np.linalg.norm(direction_to_goal)
-                    
+
                     if distance_to_goal > 0.1:
                         direction_normalized = direction_to_goal / distance_to_goal
-                        
+
                         # Speed: adjust based on flight mode and dynamic mode
-                        # NORMAL MODE: 12 m/s cruise (fast)
-                        # WIND MODE: 5 m/s cruise (slow, cautious)
                         if self.flight_mode == "WIND":
-                            # Wind mode - slow down for safety
                             if distance_to_goal > 30.0:
                                 desired_speed = 6.0
                             else:
                                 desired_speed = max(2.5, distance_to_goal * 0.25)
                         else:
-                            # NORMAL MODE: Adaptive speed based on conditions
-                            # Consider obstacles and distance
-                            obstacle_detected = vision_data and vision_data['obstacle']['type'] != 'CLEAR'
-                            
-                            if obstacle_detected:
-                                # Slow down near obstacles for better reaction time
-                                desired_speed = min(10.0, distance_to_goal * 0.35)
-                            elif distance_to_goal > 60.0:
+                            # Adaptive speed based on distance
+                            # Need earlier braking since 20 m/s takes >30m to stop
+                            if distance_to_goal > 80.0:
                                 desired_speed = 20.0
-                            elif distance_to_goal > 35.0:
-                                desired_speed = 16.5
+                            elif distance_to_goal > 40.0:
+                                desired_speed = 12.0
+                            elif distance_to_goal > 15.0:
+                                desired_speed = 6.0
+                            elif distance_to_goal > 5.0:
+                                desired_speed = 2.5
                             else:
-                                desired_speed = max(6.5, distance_to_goal * 0.65)
+                                desired_speed = max(0.5, distance_to_goal * 0.5)
 
                         # Goal guidance baseline
                         target_vx = direction_normalized[0] * desired_speed
@@ -1952,11 +1965,15 @@ class SmartVisionDroneGUI:
                         if rl_action is not None and self.flight_mode == "NORMAL":
                             rl_action = np.asarray(rl_action, dtype=np.float32)
                             rl_action = np.clip(rl_action, -1.0, 1.0)
-
+                            
                             speed_bias = float(rl_action[0]) * 2.2
-                            guided_speed = np.clip(desired_speed + speed_bias, 5.0, 20.0)
-
-                            # Keep straight-line tracking; RL only adjusts forward speed.
+                            
+                            if distance_to_goal > 25.0:
+                                guided_speed = np.clip(desired_speed + speed_bias, 4.0, 20.0)
+                            elif distance_to_goal > 8.0:
+                                guided_speed = np.clip(desired_speed + speed_bias, 2.0, 10.0)
+                            else:
+                                guided_speed = np.clip(desired_speed + (speed_bias * 0.2), 0.5, 2.5) # Force slow approach
                             target_vx = direction_normalized[0] * guided_speed
                             target_vy = direction_normalized[1] * guided_speed
                             
@@ -1966,6 +1983,43 @@ class SmartVisionDroneGUI:
                     else:
                         target_vx = 0.0
                         target_vy = 0.0
+
+                    # NORMAL MODE: Predictive TTC-based collision avoidance (Overlay on target velocity)
+                    if vision_data and vision_data.get('raw_image') is not None:
+                        current_speed = float(np.linalg.norm(velocity))
+                        crash_imminent, ttc, avg_dist, avoid_dir = self.collision_predictor.predict_collision(
+                            vision_data['raw_image'], current_speed
+                        )
+
+                        # Fallback to the trained HOUSE/POLE rules
+                        if not crash_imminent:
+                            will_collide, rule_dir = self.predict_collision()
+                            if will_collide:
+                                crash_imminent = True
+                                avoid_dir = rule_dir if rule_dir is not None else avoid_dir
+
+                        if crash_imminent and distance_to_goal > 2.0:
+                            # The drone MUST keep going towards the goal but swerve AROUND the obstacle.
+                            # We create a swerve vector perpendicular to the goal direction
+                            swerve_vx = -direction_normalized[1]
+                            swerve_vy = direction_normalized[0]
+                            
+                            obstacle_avoided = True
+                            swerve_strength = 5.0
+                            
+                            if avoid_dir == 'LEFT':
+                                target_vx += swerve_vx * swerve_strength
+                                target_vy += swerve_vy * swerve_strength
+                            elif avoid_dir == 'RIGHT':
+                                target_vx -= swerve_vx * swerve_strength
+                                target_vy -= swerve_vy * swerve_strength
+                            
+                            # Slow down forward speed to maintain control
+                            target_vx *= 0.5
+                            target_vy *= 0.5
+
+                            if step % 25 == 0:
+                                print(f"⚠️ TTC ALERT EVASION: {ttc:.2f}s | d={avg_dist:.1f}m | swerve={avoid_dir}")
                     
                     # Ultra-stable altitude hold - NO BOBBING
                     target_height_above_ground = 20.0
@@ -1983,7 +2037,7 @@ class SmartVisionDroneGUI:
                     target_vx, target_vy, target_vz = float(smoothed_cmd[0]), float(smoothed_cmd[1]), float(smoothed_cmd[2])
                     
                     # Very long duration = ultra-smooth, no oscillation
-                    safe_airsim_call(self.client.moveByVelocityAsync, float(target_vx), float(target_vy), float(-target_vz), duration=1.2)
+                    safe_airsim_call(self.client.moveByVelocityAsync, float(target_vx), float(target_vy), float(-target_vz), join_future=False, duration=1.2)
                 
                 # Update metrics using measured speed from telemetry (not command target).
                 measured_speed = float(np.linalg.norm(velocity))
@@ -2007,8 +2061,8 @@ class SmartVisionDroneGUI:
                 self.metrics['energy'].append(self.total_energy_consumed)
                 self.metrics['positions_x'].append(current_pos[0])  # Use current_pos from above
                 self.metrics['positions_y'].append(current_pos[1])
-                
-                if step % 50 == 0:
+
+                if step % 2 == 0:  # Live updates (every ~0.36 seconds)
                     try:
                         self.update_graphs()
                         if step % 100 == 0:
@@ -2033,8 +2087,8 @@ class SmartVisionDroneGUI:
             final_time = self.metrics['time'][-1] if self.metrics['time'] else 0
             final_energy = self.total_energy_consumed
             
-            # Perform RL training if enabled and goal was reached
-            if self.learning_enabled and goal_reached and len(self.agent.states) > 0:
+            # Perform RL training if enabled (even if goal not reached, learn from failure!)
+            if self.learning_enabled and len(self.agent.states) > 0:
                 print("\n🎓 TRAINING AGENT...")
                 print(f"   Collected {len(self.agent.states)} experiences")
                 actor_loss, critic_loss = self.agent.update()
@@ -2055,37 +2109,38 @@ class SmartVisionDroneGUI:
                 }
                 torch.save(trained_weights, model_save_path)
                 # Ensure the NEXT run explicitly loads this updated intelligence!
-                torch.save(trained_weights, MODEL_PATH) 
-                
+                torch.save(trained_weights, current_model_path) 
                 print(f"   💾 Model saved: {model_save_path}")
                 print(f"   🧠 Model overwrote {MODEL_PATH} for continuous learning across runs!")
-                print("   ✓ Training complete!")
-            
-            # Save run to history
-            if goal_reached:
-                # Save RL Data to a physical CSV file across all runs
-                csv_file = "rl_training_data_log.csv"
-                import os
-                file_exists = os.path.isfile(csv_file)
-                try:
-                    with open(csv_file, 'a') as f:
-                        if not file_exists:
-                            f.write("Run_Number,Final_Time_Sec,Energy_Wh,Best_Energy_Wh,Actor_Loss,Critic_Loss\n")
-                        
-                        a_loss = actor_loss if 'actor_loss' in locals() else 0.0
-                        c_loss = critic_loss if 'critic_loss' in locals() else 0.0
-                        f.write(f"{self.current_run_number},{final_time:.2f},{final_energy:.2f},{self.best_energy if self.best_energy != float('inf') else final_energy:.2f},{a_loss:.4f},{c_loss:.4f}\n")
-                    print(f"\n   📈 [SUCCESS] RL training data explicitly saved to physical file: {csv_file}")
-                except Exception as e:
-                    print(f"\n   ⚠️ Could not save physical RL CSV: {e}")
 
-                self.save_run_to_history(final_time, final_energy, goal_reached)
-                print(f"\n📊 RUN #{self.current_run_number} SUMMARY:")
-                print(f"   Time: {final_time:.1f}s")
-                print(f"   Energy: {final_energy:.2f} Wh")
-                print(f"   Best Energy: {self.best_energy:.2f} Wh")
-                print(f"   Best Time: {self.best_time:.1f}s")
-                print(f"{'='*60}\n")
+                # Update the best model ONLY if it improved energy efficiency
+                if goal_reached and final_energy < self.best_energy:
+                    torch.save(trained_weights, best_model_path)
+                    print(f"   🏆 NEW BEST MODEL SAVED! ({final_energy:.2f} Wh < {self.best_energy:.2f} Wh)")
+
+            # Save RL Data to a physical CSV file across all runs
+            csv_file = "rl_training_data_log.csv"
+            import os
+            file_exists = os.path.isfile(csv_file)
+            try:
+                with open(csv_file, 'a') as f:
+                    if not file_exists:
+                        f.write("Run_Number,Goal_Reached,Final_Time_Sec,Energy_Wh,Best_Energy_Wh,Actor_Loss,Critic_Loss\n")
+                    
+                    a_loss = actor_loss if 'actor_loss' in locals() else 0.0
+                    c_loss = critic_loss if 'critic_loss' in locals() else 0.0
+                    f.write(f"{self.current_run_number},{goal_reached},{final_time:.2f},{final_energy:.2f},{self.best_energy if self.best_energy != float('inf') else final_energy:.2f},{a_loss:.4f},{c_loss:.4f}\n")
+                print(f"\n   📈 [SUCCESS] RL training data explicitly saved to physical file: {csv_file}")
+            except Exception as e:
+                print(f"\n   ⚠️ Could not save physical RL CSV: {e}")
+
+            self.save_run_to_history(final_time, final_energy, goal_reached)
+            print(f"\n📊 RUN #{self.current_run_number} SUMMARY:")
+            print(f"   Time: {final_time:.1f}s")
+            print(f"   Energy: {final_energy:.2f} Wh")
+            print(f"   Best Energy: {self.best_energy:.2f} Wh")
+            print(f"   Best Time: {self.best_time:.1f}s")
+            print(f"{'='*60}\n")
     
     def get_depth_perception(self):
         """Get depth image and analyze obstacles"""
@@ -2182,17 +2237,17 @@ class SmartVisionDroneGUI:
                 dist_r = float(np.mean(right_box))
 
                 # Rule A: HOUSE/WALL detection (front fully blocked)
-                if dist_c < 8.0 and dist_l < 8.0 and dist_r < 8.0:
+                if dist_c < 4.0 and dist_l < 4.0 and dist_r < 4.0:
                     return (True, "UP")
-
+                
                 # Rule B: POLE/TREE detection (center blocked, one side clearer)
-                if dist_c < 10.0:
+                if dist_c < 5.0:
                     if dist_l > dist_r:
                         return (True, "LEFT")
                     return (True, "RIGHT")
-
+                
                 # Rule C: Warning band, suggest side correction but no hard evade
-                if dist_c < 14.0:
+                if dist_c < 7.0:
                     if dist_l > dist_r + 0.5:
                         return (False, "LEFT")
                     if dist_r > dist_l + 0.5:
@@ -2214,19 +2269,19 @@ class SmartVisionDroneGUI:
         
         if action == 'CLIMB':
             # Climb higher and faster to clear buildings
-            safe_airsim_call(self.client.moveByVelocityAsync, 2.0, 0, -8.0, duration=2.0)
+            safe_airsim_call(self.client.moveByVelocityAsync, 2.0, 0, -8.0, join_future=False, duration=2.0)
             time.sleep(0.1)
             return True
         elif action.startswith('SWERVE_'):
             # More aggressive swerve to avoid poles/trees
             direction = 1.0 if 'RIGHT' in action else -1.0
-            safe_airsim_call(self.client.moveByVelocityAsync, 4.0, direction * 15.0, -2.0, duration=1.0)
+            safe_airsim_call(self.client.moveByVelocityAsync, 4.0, direction * 15.0, -2.0, join_future=False, duration=1.0)
             time.sleep(0.1)
             return True
         elif action.startswith('NAV_'):
             # Navigate around gaps with stronger correction
             direction = 1.0 if 'RIGHT' in action else -1.0
-            safe_airsim_call(self.client.moveByVelocityAsync, 5.0, direction * 8.0, -2.0, duration=0.8)
+            safe_airsim_call(self.client.moveByVelocityAsync, 5.0, direction * 8.0, -2.0, join_future=False, duration=0.8)
             return True
         
         return False
@@ -2401,8 +2456,15 @@ class SmartVisionDroneGUI:
             self.window.after(100, self.update_telemetry_loop)
     
     def smart_landing(self):
-        """Safe landing: controlled descent with stability."""
+        """Safe landing: perfectly stop over goal, then descend."""
         try:
+            print("\n🛑 Exact GPS Stop over goal...")
+            self.status_label.config(text="● Locking GPS Coordinates...", fg="yellow")
+            
+            # FULL STOP before landing to prevent drift overshooting the goal
+            safe_airsim_call(self.client.moveByVelocityAsync, 0.0, 0.0, 0.0, join_future=False, duration=1.5)
+            time.sleep(1.5)
+
             print("\n🛬 Safe Landing Sequence...")
             self.status_label.config(text="● Landing Safely...", fg="orange")
             
@@ -2414,34 +2476,15 @@ class SmartVisionDroneGUI:
             current_height = abs(pos.z_val) - self.ground_height
             
             print(f"  📍 Landing from: ({pos.x_val:.1f}, {pos.y_val:.1f}), Height: {current_height:.1f}m AGL")
-            
-            # Safe controlled descent with proper stages
-            while current_height > 1.5:
-                state = safe_airsim_call(self.client.getMultirotorState)
-                if state is None:
-                    break
 
-                pos = state.kinematics_estimated.position
-                current_height = abs(pos.z_val) - self.ground_height
+            # SUPER FAST LANDING (Max free-fall descent limit)
+            safe_airsim_call(self.client.moveByVelocityAsync, 0.0, 0.0, 30.0, join_future=False, duration=2.5)
+            time.sleep(2.0)
 
-                # Safe descent rates - prioritize safety over speed
-                if current_height > 8.0:
-                    descent_rate = 1.5
-                elif current_height > 4.0:
-                    descent_rate = 1.0
-                else:
-                    descent_rate = 0.6
+            # Soften impact right before ground
+            safe_airsim_call(self.client.moveByVelocityAsync, 0.0, 0.0, 1.0, join_future=False, duration=0.5)
+            time.sleep(0.5)
 
-                safe_airsim_call(self.client.moveByVelocityAsync, 0.0, 0.0, float(descent_rate), duration=0.5)
-                time.sleep(0.18)
-
-            # Final gentle touchdown
-            print("  🛬 Final touchdown...")
-            safe_airsim_call(self.client.moveByVelocityAsync, 0, 0, 0, 0.4)  # Stabilize
-            time.sleep(0.2)
-            safe_airsim_call(self.client.landAsync)
-            time.sleep(0.6)
-            
             safe_airsim_call(self.client.armDisarm, False)
             safe_airsim_call(self.client.enableApiControl, False)
             print("✓ Landed safely")
@@ -2708,7 +2751,7 @@ class SmartVisionDroneGUI:
         # Proactive warning slowdown band (before imminent)
         if not crash_imminent and ttc < 4.0:
             slow_forward = max(1.0, min(3.0, current_speed * 0.6))
-            safe_airsim_call(client.moveByVelocityAsync, slow_forward, 0.0, -0.5, duration=0.20, vehicle_name=vehicle_name)
+            safe_airsim_call(client.moveByVelocityAsync, slow_forward, 0.0, -0.5, join_future=False, duration=0.20, vehicle_name=vehicle_name)
             return True
 
         if not crash_imminent:
@@ -2717,11 +2760,11 @@ class SmartVisionDroneGUI:
         # Imminent collision: side-step or climb
         forward_x = max(1.5, min(4.0, current_speed * 0.5))
         if avoid_dir == 'LEFT':
-            safe_airsim_call(client.moveByVelocityAsync, forward_x, -10.0, -1.5, duration=0.35, vehicle_name=vehicle_name)
+            safe_airsim_call(client.moveByVelocityAsync, forward_x, -10.0, -1.5, join_future=False, duration=0.35, vehicle_name=vehicle_name)
         elif avoid_dir == 'RIGHT':
-            safe_airsim_call(client.moveByVelocityAsync, forward_x, 10.0, -1.5, duration=0.35, vehicle_name=vehicle_name)
+            safe_airsim_call(client.moveByVelocityAsync, forward_x, 10.0, -1.5, join_future=False, duration=0.35, vehicle_name=vehicle_name)
         else:
-            safe_airsim_call(client.moveByVelocityAsync, 2.0, 0.0, -6.0, duration=0.40, vehicle_name=vehicle_name)
+            safe_airsim_call(client.moveByVelocityAsync, 2.0, 0.0, -6.0, join_future=False, duration=0.40, vehicle_name=vehicle_name)
 
         print(f"⚠️ {vehicle_name} TTC ALERT: {ttc:.2f}s | d={avg_dist:.1f}m | v={current_speed:.1f}m/s | evade={avoid_dir}")
         return True
@@ -3012,7 +3055,7 @@ class SmartVisionDroneGUI:
                 )
                 time.sleep(0.15)
 
-            safe_airsim_call(client.moveByVelocityAsync, 0.0, 0.0, 0.2, duration=0.35, vehicle_name=vehicle_name)
+            safe_airsim_call(client.moveByVelocityAsync, 0.0, 0.0, 0.2, join_future=False, duration=0.35, vehicle_name=vehicle_name)
             fut = safe_airsim_call(client.landAsync, vehicle_name=vehicle_name)
             if fut is not None:
                 fut.join()
@@ -3591,7 +3634,7 @@ class SmartVisionDroneGUI:
                     
                     safe_airsim_call(self.drone1_client.moveByVelocityAsync, 
                                    float(blended[0]), float(blended[1]), float(blended[2]), 
-                                   duration=0.6, vehicle_name="Drone1")
+                                   join_future=False, duration=0.6, vehicle_name="Drone1")
                 
                 # Calculate energy consumption
                 power = P_HOVER * (1 + 0.005 * speed**2)
@@ -3717,7 +3760,7 @@ class SmartVisionDroneGUI:
                     
                     safe_airsim_call(self.drone2_client.moveByVelocityAsync, 
                                    float(blended[0]), float(blended[1]), float(blended[2]), 
-                                   duration=0.6, vehicle_name="Drone2")
+                                   join_future=False, duration=0.6, vehicle_name="Drone2")
                 
                 # Calculate energy consumption (GNN is 12% more efficient)
                 power = P_HOVER * (1 + 0.0042 * speed**2) * 0.88  # More efficient
@@ -3905,7 +3948,7 @@ class SmartVisionDroneGUI:
                 else:
                     vz_down = 0.8  # Gentle final descent
 
-                safe_airsim_call(client.moveByVelocityAsync, 0.0, 0.0, vz_down, duration=0.5, vehicle_name=vehicle_name)
+                safe_airsim_call(client.moveByVelocityAsync, 0.0, 0.0, vz_down, join_future=False, duration=0.5, vehicle_name=vehicle_name)
                 time.sleep(0.12)
 
             print(f"   {vehicle_name}: Landing command sent")

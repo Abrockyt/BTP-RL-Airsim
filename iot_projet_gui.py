@@ -900,18 +900,16 @@ class SmartVisionDroneGUI:
         print("💨 WIND MODE activated - Using pressure sensor for heavy wind navigation")
 
     def toggle_wind(self):
-        """Toggle wind simulation ON/OFF and auto-generate fully completed RL graphs."""
+        """Toggle wind simulation ON/OFF manually."""
         self.wind_enabled = bool(self.wind_toggle_var.get())
         if self.wind_enabled:
-            print("?? Wind ENABLED - Generating completed Scenario B graphs...")
+            print("💨 Wind ENABLED")
             self.flight_mode = "WIND"
             self.set_wind_mode()
-            self._generate_demo_history("WIND")
         else:
-            print("?? Wind DISABLED - Generating completed Scenario A graphs...")
+            print("🌬️ Wind DISABLED")
             self.flight_mode = "NORMAL"
             self.set_normal_mode()
-            self._generate_demo_history("NORMAL")
             
         self.update_graphs()
 
@@ -1118,6 +1116,26 @@ class SmartVisionDroneGUI:
             self.current_run_number += 1
             goal_reached = False
             
+            # --- BATCH TESTING POLICY ---
+            # 1-10 : NORMAL (Windless)
+            # 11-20: WIND (Heavy Wind)
+            if self.current_run_number <= 10:
+                print(f"🔄 Test Batch: Normal Mode (Run {self.current_run_number}/10)")
+                self.flight_mode = "NORMAL"
+                self.set_normal_mode()
+                self.wind_enabled = False
+                self.wind_toggle_var.set(False)
+            elif self.current_run_number <= 20:
+                print(f"🔄 Test Batch: Wind Mode (Run {self.current_run_number - 10}/10)")
+                self.flight_mode = "WIND"
+                self.set_wind_mode()
+                self.wind_enabled = True
+                self.wind_toggle_var.set(True)
+            else:
+                print("✅ 20-Episode Batch Test Complete.")
+                self.window.after(0, self.stop_flight)
+                return  # Terminate testing
+                
             # Initialize
             print(f"\n{'='*60}")
             print(f"🚁 STARTING RUN #{self.current_run_number}")
@@ -1302,24 +1320,44 @@ class SmartVisionDroneGUI:
                 # Execute obstacle avoidance or navigate to goal
                 obstacle_avoided = False
                 
+                # Check for physical collision (Crash)
+                collision_info = safe_airsim_call(self.client.simGetCollisionInfo)
+                if collision_info and getattr(collision_info, 'has_collided', False):
+                    obj_name = getattr(collision_info, 'object_name', '')
+                    if obj_name and 'terrain' not in obj_name.lower():
+                        print(f"💥 COLLISION DETECTED with {obj_name}! Episode Terminated.")
+                        if self.learning_enabled:
+                            self.agent.store_reward(-100.0, done=True)
+                        goal_reached = False
+                        break  # Terminate run
+
                 # Choose navigation strategy based on flight mode
                 if self.flight_mode == "WIND":
-                    # WIND MODE: Use pressure-based navigation (no vision)
+                    # WIND MODE: Use pressure-based navigation + Safe TTC Avoidance (Don't hit things even when vision is bad)
                     if step % 100 == 0:
                         print(f"💨 Wind mode navigation - Pressure: {self.air_pressure:.0f} Pa, Wind: {self.wind_magnitude:.1f} m/s")
-                    obstacle_avoided = False  # Bypass vision-based obstacle avoidance
+                        
+                    # Still use basic depth perception to avoid walls in high wind
+                    obstacle_avoided = self._comparison_ttc_avoidance(self.client, 'Drone1', np.linalg.norm(velocity))
                 elif self.flight_mode == "NORMAL":
-                    obstacle_avoided = False
-                    # COLLISION DETECTION - End episode on crash
-                    collision_info = safe_airsim_call(self.client.simGetCollisionInfo)
-                    if collision_info and getattr(collision_info, 'has_collided', False):
-                        obj_name = getattr(collision_info, 'object_name', '')
-                        if obj_name and 'terrain' not in obj_name.lower():
-                            print(f"💥 COLLISION DETECTED with {obj_name}! Episode Terminated.")
-                            reward -= 100.0  # Penalize for collision
-                            goal_reached = False
-                            break  # Terminate run
-
+                    # NORMAL MODE: Full Vision
+                    obstacle_avoided = self._comparison_ttc_avoidance(self.client, 'Drone1', np.linalg.norm(velocity))
+                    
+                    if not obstacle_avoided:
+                        # Secondary vision check if TTC didn't trigger
+                        will_collide, evade_dir = self.predict_collision()
+                        if will_collide and evade_dir:
+                            obstacle_avoided = True
+                            print(f"⚠️ NORMAL VISION ALERT: Evading {evade_dir}")
+                            try:
+                                if evade_dir == "UP":
+                                    safe_airsim_call(self.client.moveByVelocityAsync, 0.0, 0.0, -8.0, 1.0, vehicle_name='Drone1')
+                                elif evade_dir == "LEFT":
+                                    safe_airsim_call(self.client.moveByVelocityAsync, 2.0, -9.0, -2.0, 0.8, vehicle_name='Drone1')
+                                else:
+                                    safe_airsim_call(self.client.moveByVelocityAsync, 2.0, 9.0, -2.0, 0.8, vehicle_name='Drone1')
+                                time.sleep(0.1)
+                            except: pass
 
                 
                 # Get current altitude and ground-relative height
@@ -2105,6 +2143,23 @@ class SmartVisionDroneGUI:
         return None
 
     def _comparison_ttc_avoidance(self, client, vehicle_name, current_speed):
+        depth = self._comparison_depth_snapshot(client, vehicle_name)
+        if depth is None:
+            return False
+            
+        crash_imminent, ttc, dist, avoid_dir = self.collision_predictor.predict_collision(depth, current_speed)
+        if crash_imminent:
+            print(f"⚠️ {vehicle_name} TTC ALERT! Dist={dist:.1f}m, TTC={ttc:.1f}s. Evading {avoid_dir}")
+            try:
+                if avoid_dir == "UP":
+                    safe_airsim_call(client.moveByVelocityAsync, 0.0, 0.0, -8.0, 1.0, vehicle_name=vehicle_name)
+                elif avoid_dir == "LEFT":
+                    safe_airsim_call(client.moveByVelocityAsync, 2.0, -9.0, -2.0, 0.8, vehicle_name=vehicle_name)
+                else:
+                    safe_airsim_call(client.moveByVelocityAsync, 2.0, 9.0, -2.0, 0.8, vehicle_name=vehicle_name)
+            except Exception as e:
+                print(f"Evasion error: {e}")
+            return True
         return False
 
     def open_multidrone_window(self):
