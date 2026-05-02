@@ -1,0 +1,3 @@
+Timestamp,Simulation Type,Cost of Transport (Wh/m),Cross-Track Error (m),Inference Latency (ms),Average Step Reward,Swarm Cohesion Variance,Inter-Agent Min Distance (m),Graph Connectivity Density
+2026-05-01 22:26:38,Single,0.003639,83.579941,134.053269,-6.195725,N/A,N/A,N/A
+2026-05-01 22:27:52,Single,0.003639,83.579941,134.053269,-6.195725,N/A,N/A,N/A
