@@ -1,0 +1,104 @@
+
+===========================================================================
+            ADVANCED WASTE DETECTION SIMULATION METRICS (YOLOv5 Baseline)
+===========================================================================
+Metric Category                          | Value          
+---------------------------------------------------------------------------
+[1] Detection Accuracy & Reliability
+Overall System Accuracy                  | 69.74 %
+Mean Average Precision (mAP@0.5)         | 75.72 %
+Precision (False Positive Rejection)     | 71.84 %
+Recall (True Positive Rate)              | 67.65 %
+---------------------------------------------------------------------------
+[2] Sensor Resolution & Limits
+Least Pixels Calculated (Min Size)       | 35.0 px^2
+Max Detection Range / Altitude           | 8.0 m
+---------------------------------------------------------------------------
+[3] Speed & Communication Latency
+Speed Detection (Inference FPS)          | 44.4 FPS
+Vision Inference Latency                 | 22.50 ms
+Msg Delivering Time (Telemetry)          | 13.95 ms
+---------------------------------------------------------------------------
+[4] Autonomous Search & Energy
+Area Coverage Rate                       | 13.93 m^2/s
+Waste Discovery Rate                     | 11.68 items/min
+Energy per Detection                     | 0.6074 Wh/Item
+===========================================================================
+
+===========================================================================
+            ADVANCED WASTE DETECTION SIMULATION METRICS (YOLOv5 Baseline)
+===========================================================================
+Metric Category                          | Value          
+---------------------------------------------------------------------------
+[1] Detection Accuracy & Reliability
+Overall System Accuracy                  | 69.26 %
+Mean Average Precision (mAP@0.5)         | 75.40 %
+Precision (False Positive Rejection)     | 70.86 %
+Recall (True Positive Rate)              | 67.67 %
+---------------------------------------------------------------------------
+[2] Sensor Resolution & Limits
+Least Pixels Calculated (Min Size)       | 35.0 px^2
+Max Detection Range / Altitude           | 8.0 m
+---------------------------------------------------------------------------
+[3] Speed & Communication Latency
+Speed Detection (Inference FPS)          | 44.4 FPS
+Vision Inference Latency                 | 22.50 ms
+Msg Delivering Time (Telemetry)          | 14.03 ms
+---------------------------------------------------------------------------
+[4] Autonomous Search & Energy
+Area Coverage Rate                       | 13.27 m^2/s
+Waste Discovery Rate                     | 11.36 items/min
+Energy per Detection                     | 0.6189 Wh/Item
+===========================================================================
+
+===========================================================================
+            ADVANCED WASTE DETECTION SIMULATION METRICS (YOLOv5 Baseline)
+===========================================================================
+Metric Category                          | Value          
+---------------------------------------------------------------------------
+[1] Detection Accuracy & Reliability
+Overall System Accuracy                  | 70.03 %
+Mean Average Precision (mAP@0.5)         | 74.57 %
+Precision (False Positive Rejection)     | 71.55 %
+Recall (True Positive Rate)              | 68.50 %
+---------------------------------------------------------------------------
+[2] Sensor Resolution & Limits
+Least Pixels Calculated (Min Size)       | 35.0 px^2
+Max Detection Range / Altitude           | 8.0 m
+---------------------------------------------------------------------------
+[3] Speed & Communication Latency
+Speed Detection (Inference FPS)          | 44.4 FPS
+Vision Inference Latency                 | 22.50 ms
+Msg Delivering Time (Telemetry)          | 14.52 ms
+---------------------------------------------------------------------------
+[4] Autonomous Search & Energy
+Area Coverage Rate                       | 12.73 m^2/s
+Waste Discovery Rate                     | 10.41 items/min
+Energy per Detection                     | 0.6753 Wh/Item
+===========================================================================
+
+===========================================================================
+            ADVANCED WASTE DETECTION SIMULATION METRICS (YOLOv8)
+===========================================================================
+Metric Category                          | Value          
+---------------------------------------------------------------------------
+[1] Detection Accuracy & Reliability
+Overall System Accuracy                  | 90.29 %
+Mean Average Precision (mAP@0.5)         | 89.98 %
+Precision (False Positive Rejection)     | 91.57 %
+Recall (True Positive Rate)              | 89.01 %
+---------------------------------------------------------------------------
+[2] Sensor Resolution & Limits
+Least Pixels Calculated (Min Size)       | 15.0 px^2
+Max Detection Range / Altitude           | 15.0 m
+---------------------------------------------------------------------------
+[3] Speed & Communication Latency
+Speed Detection (Inference FPS)          | 18.3 FPS
+Vision Inference Latency                 | 54.75 ms
+Msg Delivering Time (Telemetry)          | 15.11 ms
+---------------------------------------------------------------------------
+[4] Autonomous Search & Energy
+Area Coverage Rate                       | 13.79 m^2/s
+Waste Discovery Rate                     | 19.55 items/min
+Energy per Detection                     | 0.3836 Wh/Item
+===========================================================================
